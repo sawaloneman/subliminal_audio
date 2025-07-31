@@ -34,7 +34,7 @@ streamlit run superliminal_streamlit.py
 Automation tools such as n8n should call the dedicated CLI script:
 
 ```bash
-python superliminal_cli.py --input input.wav --output out.wav --fx "Micro Delay,Phase Flips"
+python superliminal_cli.py --input input.wav --output out.wav --fx "Micro Delay,Phase Flips" --speed 1.2
 ```
 
 ## Features
@@ -44,6 +44,7 @@ python superliminal_cli.py --input input.wav --output out.wav --fx "Micro Delay,
 - Binaural and isochronic beats
 - Extensive audio effects
 - Benchmarking of processing speed
+- Adjustable playback speed
 
 ## Requirements
 

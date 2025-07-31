@@ -428,18 +428,18 @@ def dbfs(a, target=-25):
 
 
 def overlay(segs):
+    """Efficiently overlay multiple segments with normalization."""
     if not segs:
         return np.zeros((1, 2))
     max_len = max(len(s) for s in segs)
-    mix = np.zeros((max_len, 2))
-    max_abs = 1e-9
-    for s in segs:
+    padded = np.zeros((len(segs), max_len, 2))
+    for i, s in enumerate(segs):
         if s.ndim == 1:
             s = np.column_stack((s, s))
-        len_s = len(s)
-        mix[:len_s] += s
-        max_abs = max(max_abs, np.max(np.abs(s)))
-    mix = mix / (max_abs * max(1, len(segs)))
+        padded[i, : len(s)] = s
+    mix = padded.sum(axis=0)
+    max_abs = np.max(np.abs(mix)) + 1e-9
+    mix = mix / max_abs / len(segs)
     return mix
 
 
@@ -452,13 +452,17 @@ def get_unique_filename(fn):
     return fn
 
 
-def proc(a, fx_vals, noise_type, hue, supra_txt, bina_toggle, bina_mode, fc, fb, iso_toggle, vol, time_stretch=True):
+def proc(a, fx_vals, noise_type, hue, supra_txt, bina_toggle, bina_mode, fc, fb,
+         iso_toggle, vol, time_stretch=True, speed=1.0):
     start = time.time()
     start_mem = psutil.Process().memory_info().rss
     try:
         a = cp.array(a) if use_gpu else a
         if time_stretch:
             new_len = int(len(a) * random.uniform(0.9, 1.1))
+            a = resample_to_length(a, new_len)
+        if speed != 1.0:
+            new_len = int(len(a) / speed)
             a = resample_to_length(a, new_len)
 
         for k, fn in FX.items():
@@ -513,6 +517,48 @@ def proc(a, fx_vals, noise_type, hue, supra_txt, bina_toggle, bina_mode, fc, fb,
 def proc_wrapper(serialized_args):
     args = pickle.loads(serialized_args)
     return proc(*args)
+
+
+def generate_layers(
+    base,
+    fx_vals,
+    noise_type,
+    hue,
+    supra_txt,
+    bina_toggle,
+    bina_mode,
+    fc,
+    fb,
+    iso_toggle,
+    vol,
+    layers,
+    rec,
+    time_stretch,
+    speed,
+    progress=None,
+):
+    """Optimized layered processing with recursion."""
+    current = base
+    total = rec + 1
+    for i in range(rec + 1):
+        proc_args = [
+            pickle.dumps((current, fx_vals, noise_type, hue, supra_txt,
+                           bina_toggle, bina_mode, fc, fb, iso_toggle, vol,
+                           time_stretch, speed))
+            for _ in range(layers)
+        ]
+        with concurrent.futures.ProcessPoolExecutor() as ex:
+            results = list(ex.map(proc_wrapper, proc_args))
+        processed = []
+        for res, err in results:
+            if err:
+                raise RuntimeError(err)
+            processed.append(res)
+        layer_mix = overlay(processed)
+        current = overlay([current, layer_mix])
+        if progress:
+            progress((i + 1) / total)
+    return current
 
 
 def run_streamlit():
@@ -571,6 +617,7 @@ def run_streamlit():
     up = st.file_uploader("Upload audio(s)", accept_multiple_files=True)
     out_fn = st.text_input("Output WAV", "out.wav")
     vol = st.slider("dBFS", -60.0, 0.0, -25.0)
+    speed = st.sidebar.slider("Speed", 0.5, 2.0, 1.0, 0.05)
     layers = st.number_input("Layers", min_value=1, value=2, step=1)
     rec = st.number_input("Recursions", min_value=1, value=1, step=1)
     mono_output = st.sidebar.checkbox("Mono Output", False)
@@ -597,7 +644,21 @@ def run_streamlit():
                 os.unlink(tmp)
         base = overlay(segs)
         preview_base = resample_poly(base[:int(SR * 10)], SR // 4, SR)
-        preview, error = proc(preview_base, fx_vals, noise_type, hue, supra_txt, bina_toggle, bina_mode, fc, fb, iso_toggle, vol, time_stretch_toggle)
+        preview, error = proc(
+            preview_base,
+            fx_vals,
+            noise_type,
+            hue,
+            supra_txt,
+            bina_toggle,
+            bina_mode,
+            fc,
+            fb,
+            iso_toggle,
+            vol,
+            time_stretch_toggle,
+            speed,
+        )
         if error:
             st.error(error)
             st.stop()
@@ -629,28 +690,32 @@ def run_streamlit():
         base = overlay(segs)
         with st.spinner("Processing layers and recursions..."):
             progress_bar = st.progress(0)
-            total_tasks = layers * (rec + 1)
-            with concurrent.futures.ProcessPoolExecutor() as ex:
-                proc_args = [
-                    (base, fx_vals, noise_type, hue, supra_txt, bina_toggle, bina_mode, fc, fb, iso_toggle, vol, time_stretch_toggle)
-                    for _ in range(layers * (rec + 1))
-                ]
-                serialized_args = [pickle.dumps(args) for args in proc_args]
-                futures = [ex.submit(proc_wrapper, s_args) for s_args in serialized_args]
-                results = []
-                errors = []
-                for i, f in enumerate(concurrent.futures.as_completed(futures)):
-                    result, error = f.result()
-                    if error:
-                        errors.append(error)
-                    elif result is not None:
-                        results.append(result)
-                    progress_bar.progress((i + 1) / total_tasks)
-                if errors:
-                    for error in errors:
-                        st.error(error)
-                    st.stop()
-            auto = overlay(results)
+
+            def update(p):
+                progress_bar.progress(p)
+
+            try:
+                auto = generate_layers(
+                    base,
+                    fx_vals,
+                    noise_type,
+                    hue,
+                    supra_txt,
+                    bina_toggle,
+                    bina_mode,
+                    fc,
+                    fb,
+                    iso_toggle,
+                    vol,
+                    layers,
+                    rec,
+                    time_stretch_toggle,
+                    speed,
+                    progress=update,
+                )
+            except RuntimeError as e:
+                st.error(str(e))
+                st.stop()
 
         if mono_output:
             auto = np.mean(auto, axis=1)[:, np.newaxis]
@@ -686,7 +751,21 @@ def run_streamlit():
                 progress_bar = st.progress(0)
                 errors = []
                 for i in range(layers * rec):
-                    result, error = proc(base, fx_vals, noise_type, hue, supra_txt, bina_toggle, bina_mode, fc, fb, iso_toggle, vol, time_stretch_toggle)
+                    result, error = proc(
+                        base,
+                        fx_vals,
+                        noise_type,
+                        hue,
+                        supra_txt,
+                        bina_toggle,
+                        bina_mode,
+                        fc,
+                        fb,
+                        iso_toggle,
+                        vol,
+                        time_stretch_toggle,
+                        speed,
+                    )
                     if error:
                         errors.append(error)
                     progress_bar.progress((i + 1) / (layers * rec))
@@ -725,6 +804,7 @@ def run_cli(argv=None):
     parser.add_argument('--layers', type=int, default=1)
     parser.add_argument('--rec', type=int, default=0)
     parser.add_argument('--time-stretch', action='store_true')
+    parser.add_argument('--speed', type=float, default=1.0)
     parser.add_argument('--mono-output', action='store_true')
     parser.add_argument('--supra', default=None, help='Supraliminal text')
     args = parser.parse_args(argv)
@@ -750,14 +830,26 @@ def run_cli(argv=None):
         segs.append(a)
     base = overlay(segs)
 
-    results = []
-    for _ in range(args.layers * (args.rec + 1)):
-        res, err = proc(base, fx_vals, args.noise, args.hue, args.supra, args.binaural, args.bina_mode, args.fc, args.fb, args.iso, args.vol, args.time_stretch)
-        if err:
-            raise RuntimeError(err)
-        results.append(res)
-
-    auto = overlay(results)
+    try:
+        auto = generate_layers(
+            base,
+            fx_vals,
+            args.noise,
+            args.hue,
+            args.supra,
+            args.binaural,
+            args.bina_mode,
+            args.fc,
+            args.fb,
+            args.iso,
+            args.vol,
+            args.layers,
+            args.rec,
+            args.time_stretch,
+            args.speed,
+        )
+    except RuntimeError as e:
+        raise SystemExit(str(e))
     if args.mono_output:
         auto = np.mean(auto, axis=1)[:, np.newaxis]
     sf.write(args.output, auto, SR)
