@@ -17,8 +17,8 @@ sudo apt install -y ffmpeg
 echo "Installing espeak and libespeak1..."
 sudo apt install -y espeak libespeak1
 
-# Installing Python packages: pydub and pyttsx3
-echo "Installing Python packages: pydub and pyttsx3..."
-pip3 install pydub pyttsx3
+# Installing Python packages
+echo "Installing Python packages..."
+pip3 install numpy streamlit soundfile gTTS scipy psutil pydub pyttsx3
 
 echo "All necessary dependencies have been installed."
