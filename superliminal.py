@@ -50,22 +50,41 @@ def resample_to_length(x, new_len):
     return cp.asarray(res) if use_gpu else res
 
 
-@st.cache_data
-def cache_tts(txt):
-    if not txt:
-        return None
-    tts = gTTS(txt)
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
-    try:
-        tts.save(tmp)
-        s, tts_sr = sf.read(tmp)
-        if s.ndim == 1:
-            s = np.column_stack((s, s))
-        if tts_sr != SR:
-            s = resample_poly(s, SR, tts_sr)
-        return s
-    finally:
-        os.unlink(tmp)
+if st is not None:
+    @st.cache_data
+    def cache_tts(txt):
+        """Cache TTS audio to avoid repeated generation."""
+        if not txt:
+            return None
+        tts = gTTS(txt)
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
+        try:
+            tts.save(tmp)
+            s, tts_sr = sf.read(tmp)
+            if s.ndim == 1:
+                s = np.column_stack((s, s))
+            if tts_sr != SR:
+                s = resample_poly(s, SR, tts_sr)
+            return s
+        finally:
+            os.unlink(tmp)
+else:
+    def cache_tts(txt):
+        """Cache TTS audio to avoid repeated generation (no Streamlit)."""
+        if not txt:
+            return None
+        tts = gTTS(txt)
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
+        try:
+            tts.save(tmp)
+            s, tts_sr = sf.read(tmp)
+            if s.ndim == 1:
+                s = np.column_stack((s, s))
+            if tts_sr != SR:
+                s = resample_poly(s, SR, tts_sr)
+            return s
+        finally:
+            os.unlink(tmp)
 
 
 @lru_cache(maxsize=32)
@@ -542,13 +561,35 @@ def generate_layers(
     total = rec + 1
     for i in range(rec + 1):
         proc_args = [
-            pickle.dumps((current, fx_vals, noise_type, hue, supra_txt,
-                           bina_toggle, bina_mode, fc, fb, iso_toggle, vol,
-                           time_stretch, speed))
+            pickle.dumps(
+                (
+                    current,
+                    fx_vals,
+                    noise_type,
+                    hue,
+                    supra_txt,
+                    bina_toggle,
+                    bina_mode,
+                    fc,
+                    fb,
+                    iso_toggle,
+                    vol,
+                    time_stretch,
+                    speed,
+                )
+            )
             for _ in range(layers)
         ]
-        with concurrent.futures.ProcessPoolExecutor() as ex:
-            results = list(ex.map(proc_wrapper, proc_args))
+        try:
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=min(layers, os.cpu_count() or 1)
+            ) as ex:
+                results = list(ex.map(proc_wrapper, proc_args))
+        except Exception as e:
+            logging.warning(
+                f"Process pool failed ({e}), falling back to sequential processing"
+            )
+            results = [proc_wrapper(a) for a in proc_args]
         processed = []
         for res, err in results:
             if err:

@@ -45,6 +45,7 @@ python superliminal_cli.py --input input.wav --output out.wav --fx "Micro Delay,
 - Extensive audio effects
 - Benchmarking of processing speed
 - Adjustable playback speed
+- Automatic fallback to sequential processing if multiprocessing fails
 
 ## Requirements
 
