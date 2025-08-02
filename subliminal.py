@@ -1,7 +1,6 @@
-
+#!/usr/bin/env python3
 from pydub import AudioSegment
 import pyttsx3
-import os
 
 # Setup Text-to-Speech engine
 engine = pyttsx3.init()
@@ -29,9 +28,10 @@ def combine_audio_tracks(tracks):
 def save_audio(audio_segment, file_path="output.mp3"):
     audio_segment.export(file_path, format="mp3")
 
-# Example usage
-tts_audio = text_to_speech("Hello, this is an example of text to speech conversion.", rate=120, volume=0.8, pitch=70)
-faster_audio = adjust_speed(tts_audio, playback_speed=1.5)
-combined_audio = combine_audio_tracks([tts_audio, faster_audio])
-save_audio(combined_audio, "final_output.mp3")
+if __name__ == "__main__":
+    # Example usage
+    tts_audio = text_to_speech("Hello, this is an example of text to speech conversion.", rate=120, volume=0.8, pitch=70)
+    faster_audio = adjust_speed(tts_audio, playback_speed=1.5)
+    combined_audio = combine_audio_tracks([tts_audio, faster_audio])
+    save_audio(combined_audio, "final_output.mp3")
     
