@@ -1,14 +1,21 @@
-
 # Subliminal Audio Application
 
-This repository contains a Python script for creating subliminal audio tracks with adjustable features such as speed, pitch, and volume. Additionally, it supports multiple layers of audio and text-to-speech capabilities.
+This repository contains a Python script for creating subliminal audio tracks with adjustable features such as speed, pitch, and
+ volume. Additionally, it supports multiple layers of audio and text-to-speech capabilities.
 
 ## Installation
 
-Run the following script to install all necessary dependencies. This script installs Python 3, pip, ffmpeg, espeak, and the required Python libraries.
+Run the following script to install all necessary system and Python dependencies. This script installs Python 3, pip, ffmpeg,
+espeak, Chromium (for Selenium automation), and every required Python library.
 
 ```bash
 ./install_dependencies.sh
+```
+
+Alternatively, if you only need the Python packages you can install them directly:
+
+```bash
+pip install -r requirements.txt
 ```
 
 ## Usage
@@ -54,9 +61,12 @@ can log in and approve uploads before the automation proceeds.
 - pip
 - ffmpeg
 - espeak
+- Chromium browser and chromedriver (for Selenium automation)
 - pydub
 - pyttsx3
 - openai
+- streamlit
+- selenium
 - google-auth
 - google-auth-oauthlib
 - google-api-python-client

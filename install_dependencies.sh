@@ -1,5 +1,5 @@
-
 #!/bin/bash
+set -euo pipefail
 
 # Updating the package list
 echo "Updating package list..."
@@ -17,8 +17,13 @@ sudo apt install -y ffmpeg
 echo "Installing espeak and libespeak1..."
 sudo apt install -y espeak libespeak1
 
-# Installing Python packages: pydub and pyttsx3
-echo "Installing Python packages: pydub and pyttsx3..."
-pip3 install pydub pyttsx3
+# Installing system dependencies required by Selenium (Chrome/Chromium)
+echo "Installing Chromium browser and driver dependencies..."
+sudo apt install -y chromium-browser chromium-chromedriver || sudo apt install -y chromium-driver
+
+# Installing Python packages from requirements.txt
+echo "Installing Python dependencies from requirements.txt..."
+pip3 install --upgrade pip
+pip3 install -r requirements.txt
 
 echo "All necessary dependencies have been installed."
