@@ -409,6 +409,17 @@ def pitch_shift(segment: AudioSegment, semitones: float) -> AudioSegment:
     return speed_change(segment, factor)
 
 
+def _coerce_time_series(values: Sequence[Tuple[float, float]]) -> Sequence[Tuple[float, float]]:
+    """Ensure time/value pairs are clamped to ``[0, 1]`` and sorted."""
+
+    if not values:
+        return [(0.0, 0.0), (1.0, 0.0)]
+    clamped = []
+    for time_ratio, freq in values:
+        clamped.append((max(0.0, min(1.0, float(time_ratio))), float(freq)))
+    return sorted(clamped, key=lambda item: item[0])
+
+
 def generate_binaural(config: BinauralBeatConfig, sample_rate: int) -> AudioSegment:
     """Generate a binaural beat program with optional tremolo."""
 
@@ -479,6 +490,88 @@ def generate_noise_layer(
     noise = coloured_noise(duration_ms, sample_rate, colour) * amplitude
     stereo = np.stack([noise, noise], axis=1)
     return array_to_segment(stereo, sample_rate, channels=2)
+
+
+# -----------------------------------------------------------------------------
+# Compatibility helpers
+# -----------------------------------------------------------------------------
+
+
+def binaural(
+    duration_ms: float,
+    sample_rate: int,
+    carrier_hz: Union[float, Sequence[float], Tuple[float, float]],
+    beat_hz: Union[
+        float,
+        Sequence[float],
+        Sequence[Tuple[float, float]],
+    ],
+    *,
+    amplitude: float = 0.6,
+    waveform: str = "sine",
+    tremolo_hz: Optional[float] = None,
+    tremolo_depth: float = 0.0,
+) -> AudioSegment:
+    """Backwards-compatible binaural generator used by legacy scripts.
+
+    The historical public API exposed a ``binaural`` function that accepted
+    primitive frequency arguments.  Modern callers should instantiate
+    ``BinauralBeatConfig`` directly, but this shim keeps older notebooks and
+    automation working by translating into the richer configuration object.
+    """
+
+    beat_sequence: Optional[Sequence] = None
+    if isinstance(beat_hz, Sequence) and not isinstance(beat_hz, (str, bytes)):
+        beat_sequence = list(beat_hz)
+
+    if beat_sequence and isinstance(beat_sequence[0], (tuple, list)):
+        schedule = _coerce_time_series([(float(t), float(v)) for t, v in beat_sequence])
+    else:
+        if beat_sequence is not None:
+            beat_values = [float(val) for val in beat_sequence]
+        else:
+            beat_values = [float(beat_hz)]
+        if len(beat_values) == 1:
+            schedule = [(0.0, beat_values[0]), (1.0, beat_values[0])]
+        else:
+            total = max(1, len(beat_values) - 1)
+            schedule = [(idx / total, value) for idx, value in enumerate(beat_values)]
+
+    if isinstance(carrier_hz, Sequence) and not isinstance(carrier_hz, (str, bytes)):
+        carrier_values = list(carrier_hz)
+        carrier = tuple(float(value) for value in carrier_values)
+        if len(carrier) == 1:
+            carrier = carrier[0]
+    else:
+        carrier = float(carrier_hz)
+
+    config = BinauralBeatConfig(
+        duration_ms=int(round(duration_ms)),
+        carrier_hz=carrier,
+        beat_schedule=schedule,
+        amplitude=float(amplitude),
+        tremolo_hz=tremolo_hz,
+        tremolo_depth=float(tremolo_depth) if tremolo_depth is not None else 0.0,
+        waveform=waveform,
+    )
+    return generate_binaural(config, sample_rate)
+
+
+def overlay(segments: Sequence[AudioSegment]) -> AudioSegment:
+    """Overlay multiple segments, matching the behaviour of legacy helpers."""
+
+    segments = [segment for segment in segments if segment is not None]
+    if not segments:
+        raise ValueError("No audio segments provided")
+
+    base = segments[0]
+    for segment in segments[1:]:
+        base = base.overlay(segment)
+
+    target_duration = max(len(segment) for segment in segments)
+    if len(base) < target_duration:
+        base = ensure_length(base, target_duration)
+    return base
 
 
 # -----------------------------------------------------------------------------
