@@ -36,6 +36,11 @@ python3 automation_agent.py
 You can choose between manual mode (step-by-step configuration for each run)
 and auto mode (randomized settings every five minutes).
 
+If the `OPENAI_API_KEY` environment variable is not set, the agent will prompt
+you to securely enter the key at runtime. When a `GOOGLE_CLIENT_SECRETS` path
+is supplied, the script launches the standard YouTube OAuth consent flow so you
+can log in and approve uploads before the automation proceeds.
+
 ## Features
 
 - Text to speech conversion
@@ -51,6 +56,7 @@ and auto mode (randomized settings every five minutes).
 - espeak
 - pydub
 - pyttsx3
+- openai
 - google-auth
 - google-auth-oauthlib
 - google-api-python-client

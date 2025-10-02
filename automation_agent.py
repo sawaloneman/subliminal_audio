@@ -42,11 +42,14 @@ import os
 import random
 import sys
 import time
+from getpass import getpass
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from openai import OpenAI
+if TYPE_CHECKING:
+    from openai import OpenAI as OpenAIClient
+
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.common.by import By
@@ -87,6 +90,20 @@ def _load_google_client_dependencies():
 
 
 Request, Credentials, build, MediaFileUpload, InstalledAppFlow = _load_google_client_dependencies()
+
+
+def _load_openai_client() -> "OpenAIClient":
+    """Dynamically load the OpenAI client, guiding users to install it."""
+
+    if importlib.util.find_spec("openai") is None:
+        raise ModuleNotFoundError(
+            "OpenAI API support requires the `openai` package. "
+            "Install it with `pip install openai` before running the agent."
+        )
+
+    from openai import OpenAI as _OpenAI
+
+    return _OpenAI
 
 # The Streamlit generator is expected to live in the same repository.  Update
 # the import below to match the actual module name if it differs.
@@ -138,12 +155,21 @@ class GeneratedAssets:
 # --- Helper utilities --------------------------------------------------------------
 
 
-def build_openai_client() -> OpenAI:
-    """Instantiate an OpenAI client using the environment API key."""
+def build_openai_client() -> "OpenAIClient":
+    """Instantiate an OpenAI client using the environment or prompted API key."""
+
+    OpenAI = _load_openai_client()
 
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY environment variable is not set.")
+        print("OPENAI_API_KEY environment variable is not set.")
+        api_key = getpass("Enter your OpenAI API key (input hidden): ").strip()
+        if not api_key:
+            raise RuntimeError(
+                "An OpenAI API key is required. Set the OPENAI_API_KEY environment "
+                "variable or provide it interactively when prompted."
+            )
+        os.environ["OPENAI_API_KEY"] = api_key
     return OpenAI(api_key=api_key)
 
 
@@ -188,7 +214,7 @@ def parse_openai_text(response) -> str:
     raise ValueError("Unexpected OpenAI response format.")
 
 
-def generate_affirmations(client: OpenAI, theme: str, count: int) -> List[str]:
+def generate_affirmations(client: "OpenAIClient", theme: str, count: int) -> List[str]:
     prompt = (
         "You are crafting concise subliminal affirmations. "
         f"Write {count} first-person present-tense statements tailored for a "
@@ -207,7 +233,9 @@ def generate_affirmations(client: OpenAI, theme: str, count: int) -> List[str]:
     return affirmations[:count]
 
 
-def generate_metadata(client: OpenAI, affirmations: Sequence[str], noise_type: str) -> Tuple[str, str, str]:
+def generate_metadata(
+    client: "OpenAIClient", affirmations: Sequence[str], noise_type: str
+) -> Tuple[str, str, str]:
     joined_affirmations = "\n".join(f"- {a}" for a in affirmations)
     prompt = (
         "Create a compelling YouTube title and description for the following "
@@ -227,7 +255,7 @@ def generate_metadata(client: OpenAI, affirmations: Sequence[str], noise_type: s
     return payload["title"].strip(), payload["description"].strip(), payload["thumbnail_prompt"].strip()
 
 
-def generate_thumbnail(client: OpenAI, prompt: str, output_path: Path) -> Path:
+def generate_thumbnail(client: "OpenAIClient", prompt: str, output_path: Path) -> Path:
     response = client.images.generate(model="gpt-image-1", prompt=prompt, size="1024x1024")
     image_b64 = response.data[0].b64_json
     output_path.write_bytes(base64.b64decode(image_b64))
@@ -445,7 +473,7 @@ def build_output_stem(settings: GeneratorSettings) -> str:
 
 def run_single_workflow(
     settings: GeneratorSettings,
-    openai_client: OpenAI,
+    openai_client: "OpenAIClient",
     generator: Callable[..., Path] = generate_subliminal_audio,
     base_output_dir: Path = Path("artifacts"),
     youtube_client=None,
@@ -493,7 +521,7 @@ def run_single_workflow(
     )
 
 
-def run_manual_mode(openai_client: OpenAI, youtube_client) -> None:
+def run_manual_mode(openai_client: "OpenAIClient", youtube_client) -> None:
     while True:
         settings = collect_manual_settings()
         if settings is None:
@@ -504,7 +532,7 @@ def run_manual_mode(openai_client: OpenAI, youtube_client) -> None:
             print(f"Workflow complete. Video saved to {assets.video_path}")
 
 
-def run_auto_mode(openai_client: OpenAI, youtube_client, interval_minutes: int = 5) -> None:
+def run_auto_mode(openai_client: "OpenAIClient", youtube_client, interval_minutes: int = 5) -> None:
     print("Starting auto mode. Press Ctrl+C to stop.")
     while True:
         settings = choose_random_settings()
