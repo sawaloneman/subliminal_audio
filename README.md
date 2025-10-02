@@ -13,11 +13,28 @@ Run the following script to install all necessary dependencies. This script inst
 
 ## Usage
 
-To use the application, run:
+### Streamlit generator
+
+To use the classic standalone script, run:
 
 ```bash
 python3 subliminal.py
 ```
+
+### Automation agent
+
+The repository now includes `automation_agent.py`, an AI-assisted workflow for
+automating subliminal audio video creation and publishing. The agent expects an
+existing Streamlit app that exposes a `generate_subliminal_audio(...)`
+function. Configure the required API credentials (OpenAI, YouTube, Selenium)
+via environment variables, then launch the agent:
+
+```bash
+python3 automation_agent.py
+```
+
+You can choose between manual mode (step-by-step configuration for each run)
+and auto mode (randomized settings every five minutes).
 
 ## Features
 
