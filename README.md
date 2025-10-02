@@ -15,6 +15,8 @@ a Streamlit experience that echoes Spotify's polished dark aesthetic.
   `gTTS` in hosted notebooks such as Google Colab.
 - **Streamlit UI** – craft sessions visually with an Aura/Spotify inspired look
   and one-click export to WAV, MP3, or FLAC.
+- **Recursive & repeatable layers** – loop any layer indefinitely or spawn
+  fractal overlays with controllable decay, offsets, and time-scaling.
 
 ## Installation
 
@@ -88,6 +90,8 @@ Customise rendering with a JSON file:
     {
       "name": "Gamma burst",
       "type": "binaural",
+      "repeat": 0,
+      "recursion": {"depth": 4, "decay": 0.6, "offset_ms": 6000},
       "params": {
         "duration_ms": 420000,
         "carrier_start": 180.0,
@@ -124,7 +128,8 @@ python3 subliminal.py --config session.json --output night_session.mp3
 
 3. Use the sidebar to set session length, sample rate, and rendering backend.
 4. Add unlimited layers – each layer exposes controls for gain, pan, ADSR,
-   binaural beat schedules, morphic textures, and coloured noise beds.
+   binaural beat schedules, morphic textures, coloured noise beds, loop counts,
+   and recursive fractal stacking.
 5. Click **Render session** to preview the mix and download the master.
 
 > Tip: For cloud notebooks, pair Streamlit with `pip install pyngrok` to tunnel
@@ -135,6 +140,17 @@ the UI.
 - `subliminal.py` – core rendering engine plus CLI.
 - `streamlit_app.py` – Aura Forge Streamlit UI.
 - `install_dependencies.sh` – convenience installer for Debian/Ubuntu hosts.
+
+## Recursive layering & repeats
+
+- Set `"repeat": 0` on any layer (or use the "Sequential repeats" control in
+  Streamlit) to loop it for the full session duration. Use a positive integer to
+  tile it a fixed number of times.
+- Provide a `"recursion"` block with `depth`, `decay`, optional `offset_ms`, and
+  `time_scale` to spawn progressively quieter overlays for limitless fractal
+  density.
+- These options work in CLI JSON, Google Colab notebooks, and the Streamlit UI,
+  letting you design unlimited stacks without manual duplication.
 
 ## License
 

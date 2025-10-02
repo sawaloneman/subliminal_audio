@@ -31,7 +31,7 @@ import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from pydub import AudioSegment
@@ -62,6 +62,14 @@ def db_to_amplitude(db: float) -> float:
     """Convert decibels relative to full scale into a linear amplitude."""
 
     return 10 ** (db / 20.0)
+
+
+def amplitude_to_db(amplitude: float) -> float:
+    """Convert a linear amplitude into decibels relative to full scale."""
+
+    if amplitude <= 0:
+        return -120.0
+    return 20.0 * math.log10(amplitude)
 
 
 def ensure_directory(path: Union[str, os.PathLike]) -> None:
@@ -203,6 +211,15 @@ def ensure_length(segment: AudioSegment, duration_ms: int) -> AudioSegment:
     return extended[:duration_ms]
 
 
+def pad_to_length(segment: AudioSegment, duration_ms: int) -> AudioSegment:
+    """Extend ``segment`` with silence (or trim) to match ``duration_ms``."""
+
+    if len(segment) >= duration_ms:
+        return segment[:duration_ms]
+    padding = AudioSegment.silent(duration=duration_ms - len(segment), frame_rate=segment.frame_rate)
+    return segment + padding
+
+
 def coloured_noise(
     duration_ms: float,
     sample_rate: int,
@@ -280,6 +297,59 @@ class LayerConfig:
     pan: float = 0.0
     adsr: Optional[Dict[str, float]] = None
     params: Dict[str, Union[str, float, int, Sequence[float], Dict[str, float]]] = field(default_factory=dict)
+    repeat: Optional[int] = None
+    recursion: Optional[Dict[str, Any]] = None
+
+    def __post_init__(self) -> None:
+        if self.repeat is None and isinstance(self.params, dict):
+            maybe_repeat = self.params.get("repeat")
+            if maybe_repeat is None:
+                maybe_repeat = self.params.get("repeat_count")
+            if maybe_repeat is not None:
+                self.repeat = maybe_repeat  # type: ignore[assignment]
+
+        if self.recursion is None and isinstance(self.params, dict):
+            maybe_recursion = self.params.get("recursion") or self.params.get("recursive")
+            if maybe_recursion:
+                self.recursion = maybe_recursion  # type: ignore[assignment]
+
+        if isinstance(self.repeat, str):
+            lowered = self.repeat.lower()
+            if lowered in {"infinite", "loop", "endless"}:
+                self.repeat = 0
+            else:
+                try:
+                    self.repeat = int(lowered)
+                except ValueError:
+                    self.repeat = None
+
+        if self.recursion:
+            raw = dict(self.recursion)
+            try:
+                depth = int(raw.get("depth", raw.get("levels", 0)))
+            except (TypeError, ValueError):
+                depth = 0
+            if depth <= 0:
+                self.recursion = None
+            else:
+                try:
+                    decay = float(raw.get("decay", raw.get("attenuation", 0.5)))
+                except (TypeError, ValueError):
+                    decay = 0.5
+                try:
+                    offset = int(raw.get("offset_ms", raw.get("time_offset_ms", 0)))
+                except (TypeError, ValueError):
+                    offset = 0
+                try:
+                    time_scale = float(raw.get("time_scale", raw.get("speed_scale", 1.0)))
+                except (TypeError, ValueError):
+                    time_scale = 1.0
+                self.recursion = {
+                    "depth": depth,
+                    "decay": max(0.0, decay),
+                    "offset_ms": max(0, offset),
+                    "time_scale": max(0.1, min(time_scale, 4.0)),
+                }
 
 
 @dataclass
@@ -574,6 +644,43 @@ def overlay(segments: Sequence[AudioSegment]) -> AudioSegment:
     return base
 
 
+def recursive_overlay(
+    segment: AudioSegment,
+    depth: int,
+    *,
+    decay: float = 0.5,
+    offset_ms: int = 0,
+    time_scale: float = 1.0,
+) -> AudioSegment:
+    """Overlay progressively transformed copies of ``segment`` to build fractal stacks."""
+
+    if depth <= 0:
+        return segment
+
+    decay = max(0.0, float(decay))
+    time_scale = max(0.1, min(float(time_scale), 4.0))
+    offset_ms = max(0, int(offset_ms))
+
+    mix = segment
+    base = segment
+    for level in range(1, depth + 1):
+        duplicate = base
+        if time_scale != 1.0:
+            duplicate = speed_change(duplicate, time_scale ** level)
+            duplicate = duplicate.set_frame_rate(base.frame_rate)
+        amplitude = decay ** level if decay else 0.0
+        if amplitude <= 0.0:
+            continue
+        if amplitude != 1.0:
+            duplicate = duplicate.apply_gain(amplitude_to_db(amplitude))
+        if offset_ms:
+            duplicate = AudioSegment.silent(duration=offset_ms * level, frame_rate=duplicate.frame_rate) + duplicate
+        if len(duplicate) > len(mix):
+            mix = pad_to_length(mix, len(duplicate))
+        mix = mix.overlay(duplicate)
+    return mix
+
+
 # -----------------------------------------------------------------------------
 # Rendering engine
 # -----------------------------------------------------------------------------
@@ -592,6 +699,8 @@ class SubliminalSession:
         segments: List[AudioSegment] = []
         for layer in self.config.layers:
             segment = self._render_layer(layer)
+            segment = self._apply_layer_recursion(segment, layer)
+            segment = self._apply_layer_repeat(segment, layer)
             if layer.gain_db:
                 segment = segment.apply_gain(layer.gain_db)
             if layer.pan:
@@ -628,6 +737,63 @@ class SubliminalSession:
         return mix
 
     # Internal ---------------------------------------------------------------
+
+    def _layer_target_duration(self, layer: LayerConfig, segment: AudioSegment) -> int:
+        explicit = layer.params.get("duration_ms") if isinstance(layer.params, dict) else None
+        if explicit is not None:
+            try:
+                return int(explicit)
+            except (TypeError, ValueError):
+                pass
+        if self.config.duration_ms is not None:
+            return int(self.config.duration_ms)
+        return len(segment)
+
+    def _apply_layer_recursion(self, segment: AudioSegment, layer: LayerConfig) -> AudioSegment:
+        recursion_cfg = layer.recursion or {}
+        if not recursion_cfg:
+            return segment
+        try:
+            depth = int(recursion_cfg.get("depth", 0))
+        except (TypeError, ValueError):
+            depth = 0
+        if depth <= 0:
+            return segment
+        try:
+            decay = float(recursion_cfg.get("decay", 0.5))
+        except (TypeError, ValueError):
+            decay = 0.5
+        try:
+            offset_ms = int(recursion_cfg.get("offset_ms", recursion_cfg.get("time_offset_ms", 0)))
+        except (TypeError, ValueError):
+            offset_ms = 0
+        try:
+            time_scale = float(recursion_cfg.get("time_scale", recursion_cfg.get("speed_scale", 1.0)))
+        except (TypeError, ValueError):
+            time_scale = 1.0
+        stacked = recursive_overlay(segment, depth, decay=decay, offset_ms=offset_ms, time_scale=time_scale)
+        target = self._layer_target_duration(layer, stacked)
+        return pad_to_length(stacked, target)
+
+    def _apply_layer_repeat(self, segment: AudioSegment, layer: LayerConfig) -> AudioSegment:
+        repeat_value: Optional[Union[int, str]] = layer.repeat
+        if repeat_value is None and isinstance(layer.params, dict):
+            repeat_value = layer.params.get("repeat_count", layer.params.get("repeat"))
+        if repeat_value is None:
+            return segment
+        try:
+            repeat_int = int(repeat_value)
+        except (TypeError, ValueError):
+            return segment
+        if repeat_int <= 0:
+            target = self._layer_target_duration(layer, segment)
+            return ensure_length(segment, target)
+        if repeat_int == 1:
+            target = self._layer_target_duration(layer, segment)
+            return pad_to_length(segment, target)
+        repeated = segment * repeat_int
+        target = self._layer_target_duration(layer, repeated)
+        return pad_to_length(repeated, target)
 
     def _render_layer(self, layer: LayerConfig) -> AudioSegment:
         layer_type = layer.type.lower()
@@ -790,6 +956,7 @@ def demo_session() -> SessionConfig:
                 type="noise",
                 gain_db=-14.0,
                 pan=0.0,
+                recursion={"depth": 3, "decay": 0.6, "offset_ms": 7000, "time_scale": 0.9},
                 params={
                     "duration_ms": duration_ms,
                     "colour": "brown",

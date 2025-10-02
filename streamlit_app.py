@@ -214,6 +214,58 @@ def _layer_controls(index: int, layer: Dict[str, Any]) -> Dict[str, Any]:
                     params["path"] = existing
             layer_type = "file"
 
+        with st.expander("Stacking & recursion", expanded=False):
+            repeat_default = int(layer.get("repeat", 0) or 0)
+            repeat = st.number_input(
+                "Sequential repeats (0 = auto-fill)",
+                min_value=0,
+                max_value=999,
+                value=repeat_default,
+                key=f"repeat_{key_prefix}",
+                help="0 loops the layer to the target duration. Any other value tiles the layer exactly that many times.",
+            )
+            recursion_defaults = layer.get("recursion") or {}
+            rec_depth = st.slider(
+                "Recursive overlays",
+                min_value=0,
+                max_value=12,
+                value=int(recursion_defaults.get("depth", 0)),
+                key=f"rec_depth_{key_prefix}",
+            )
+            rec_decay = st.slider(
+                "Recursion decay",
+                min_value=0.05,
+                max_value=1.0,
+                value=float(recursion_defaults.get("decay", 0.55)),
+                step=0.05,
+                key=f"rec_decay_{key_prefix}",
+            )
+            rec_offset = st.slider(
+                "Recursion offset (ms)",
+                min_value=0,
+                max_value=120_000,
+                value=int(recursion_defaults.get("offset_ms", recursion_defaults.get("time_offset_ms", 0))),
+                step=100,
+                key=f"rec_offset_{key_prefix}",
+            )
+            rec_scale = st.slider(
+                "Recursion time-scale",
+                min_value=0.25,
+                max_value=4.0,
+                value=float(recursion_defaults.get("time_scale", 1.0)),
+                step=0.05,
+                key=f"rec_scale_{key_prefix}",
+            )
+
+        recursion_cfg = None
+        if rec_depth > 0:
+            recursion_cfg = {
+                "depth": int(rec_depth),
+                "decay": float(rec_decay),
+                "offset_ms": int(rec_offset),
+                "time_scale": float(rec_scale),
+            }
+
         col_remove, col_blank = st.columns([1, 3])
         with col_remove:
             if st.button("Remove layer", key=f"remove_{key_prefix}"):
@@ -228,12 +280,26 @@ def _layer_controls(index: int, layer: Dict[str, Any]) -> Dict[str, Any]:
         "adsr": adsr or None,
         "params": params,
         "type_readable": layer_type_label,
+        "repeat": int(repeat),
+        "recursion": recursion_cfg,
     }
 
 
 def _build_session_config() -> SessionConfig:
     layer_dicts = st.session_state.layer_configs
-    layers = [LayerConfig(name=layer["name"], type=layer["type"], gain_db=layer["gain_db"], pan=layer.get("pan", 0.0), adsr=layer.get("adsr"), params=layer.get("params", {})) for layer in layer_dicts]
+    layers = [
+        LayerConfig(
+            name=layer["name"],
+            type=layer["type"],
+            gain_db=layer["gain_db"],
+            pan=layer.get("pan", 0.0),
+            adsr=layer.get("adsr"),
+            params=layer.get("params", {}),
+            repeat=layer.get("repeat"),
+            recursion=layer.get("recursion"),
+        )
+        for layer in layer_dicts
+    ]
     globals_cfg = st.session_state.global_settings
     return SessionConfig(
         layers=layers,
@@ -282,6 +348,8 @@ def main() -> None:
                         "volume": 0.9,
                         "duration_ms": st.session_state.global_settings["duration_ms"],
                     },
+                    "repeat": 0,
+                    "recursion": None,
                 }
             )
 
