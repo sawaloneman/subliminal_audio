@@ -48,6 +48,12 @@ you to securely enter the key at runtime. When a `GOOGLE_CLIENT_SECRETS` path
 is supplied, the script launches the standard YouTube OAuth consent flow so you
 can log in and approve uploads before the automation proceeds.
 
+If your Streamlit module or generator function are named differently, export
+`STREAMLIT_APP_MODULE` and/or `STREAMLIT_GENERATOR_NAME` so the automation agent
+can import the correct callable. When unset, it searches common module names
+such as `streamlit_app`, `app`, `main`, and `subliminal` for a
+`generate_subliminal_audio` function.
+
 ## Features
 
 - Text to speech conversion

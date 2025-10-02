@@ -106,10 +106,57 @@ def _load_openai_client() -> "OpenAIClient":
     return _OpenAI
 
 # The Streamlit generator is expected to live in the same repository.  Update
-# the import below to match the actual module name if it differs.
-STREAMLIT_APP_MODULE = os.environ.get("STREAMLIT_APP_MODULE", "streamlit_app")
-_streamlit_module = importlib.import_module(STREAMLIT_APP_MODULE)
-generate_subliminal_audio = getattr(_streamlit_module, "generate_subliminal_audio")
+# the environment variables below to match the actual module/function names if
+# they differ from the defaults provided here.
+STREAMLIT_APP_MODULE = os.environ.get("STREAMLIT_APP_MODULE")
+STREAMLIT_GENERATOR_NAME = os.environ.get(
+    "STREAMLIT_GENERATOR_NAME", "generate_subliminal_audio"
+)
+
+
+def _resolve_streamlit_generator() -> Callable[..., Path]:
+    """Locate the Streamlit audio generator function.
+
+    The automation agent was originally designed to import a module named
+    ``streamlit_app`` that exposes a ``generate_subliminal_audio`` callable.  In
+    practice, projects frequently organize their Streamlit apps differently. To
+    minimise friction we search a handful of likely module names and honour the
+    optional ``STREAMLIT_APP_MODULE`` and ``STREAMLIT_GENERATOR_NAME``
+    environment overrides.  A descriptive error message is raised if we exhaust
+    the options without finding a usable function.
+    """
+
+    attempted: List[str] = []
+
+    def candidate_modules() -> Iterable[str]:
+        if STREAMLIT_APP_MODULE:
+            yield STREAMLIT_APP_MODULE
+        for default_name in ("streamlit_app", "app", "main", "subliminal"):
+            if default_name != STREAMLIT_APP_MODULE:
+                yield default_name
+
+    for module_name in dict.fromkeys(candidate_modules()):
+        attempted.append(module_name)
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            continue
+
+        generator = getattr(module, STREAMLIT_GENERATOR_NAME, None)
+        if callable(generator):
+            return generator
+
+    attempted_list = ", ".join(attempted) or "<none>"
+    raise AttributeError(
+        "Unable to locate a Streamlit generator function named "
+        f"`{STREAMLIT_GENERATOR_NAME}`. Set the STREAMLIT_APP_MODULE and/"
+        "or STREAMLIT_GENERATOR_NAME environment variables so the automation "
+        "agent can import the correct function. Attempted modules: "
+        f"{attempted_list}."
+    )
+
+
+generate_subliminal_audio = _resolve_streamlit_generator()
 
 
 # --- Configuration -----------------------------------------------------------------
