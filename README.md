@@ -51,3 +51,6 @@ and auto mode (randomized settings every five minutes).
 - espeak
 - pydub
 - pyttsx3
+- google-auth
+- google-auth-oauthlib
+- google-api-python-client

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import base64
 import importlib
+import importlib.util
 import json
 import os
 import random
@@ -45,17 +46,47 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-from google_auth_oauthlib.flow import InstalledAppFlow
 from openai import OpenAI
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+
+
+def _load_google_client_dependencies():
+    """Return Google client helpers, ensuring dependencies are installed."""
+
+    required_packages = {
+        "google.auth": "google-auth",
+        "google.oauth2": "google-auth",
+        "googleapiclient": "google-api-python-client",
+        "google_auth_oauthlib": "google-auth-oauthlib",
+    }
+
+    missing = [
+        package_name
+        for module_name, package_name in required_packages.items()
+        if importlib.util.find_spec(module_name) is None
+    ]
+
+    if missing:
+        install_hint = "pip install " + " ".join(sorted(set(missing)))
+        raise ModuleNotFoundError(
+            "YouTube uploads require Google API client libraries. "
+            f"Install them with `{install_hint}` before running the agent."
+        )
+
+    from google.auth.transport.requests import Request as _Request
+    from google.oauth2.credentials import Credentials as _Credentials
+    from googleapiclient.discovery import build as _build
+    from googleapiclient.http import MediaFileUpload as _MediaFileUpload
+    from google_auth_oauthlib.flow import InstalledAppFlow as _InstalledAppFlow
+
+    return _Request, _Credentials, _build, _MediaFileUpload, _InstalledAppFlow
+
+
+Request, Credentials, build, MediaFileUpload, InstalledAppFlow = _load_google_client_dependencies()
 
 # The Streamlit generator is expected to live in the same repository.  Update
 # the import below to match the actual module name if it differs.
