@@ -21,6 +21,26 @@ def adjust_speed(audio_segment, playback_speed=1.0):
     return audio_segment._spawn(audio_segment.raw_data, overrides={'frame_rate': new_frame_rate})
 
 def combine_audio_tracks(tracks):
+    """Overlay multiple audio tracks.
+
+    Parameters
+    ----------
+    tracks : list[AudioSegment]
+        Audio segments to combine. The first element acts as the base track.
+
+    Returns
+    -------
+    AudioSegment
+        The combined audio.
+
+    Raises
+    ------
+    ValueError
+        If no tracks are provided.
+    """
+    if not tracks:
+        raise ValueError("No audio tracks were provided")
+
     combined_track = tracks[0]
     for track in tracks[1:]:
         combined_track = combined_track.overlay(track)
