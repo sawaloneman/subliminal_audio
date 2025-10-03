@@ -218,6 +218,8 @@ DEFAULT_NOISE_TYPES: Sequence[str] = (
     "morphic-field",
     "metaliminal",
     "supraliminal",
+    "ultraliminal",
+    "superliminal",
     "phantomliminal",
     "binaural",
     "none",

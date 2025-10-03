@@ -10,12 +10,20 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
-from typing import Iterator, Optional, Sequence
+from typing import TYPE_CHECKING, Iterator, Optional, Sequence
 
 import streamlit as st
 from pydub import AudioSegment, effects
 from pydub.generators import Sine, WhiteNoise
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from pyttsx3.engine import Engine as PyTTSX3Engine
+
+
+_PYTTSX3_ENGINE: Optional["PyTTSX3Engine"] = None
+_PYTTSX3_LOCK = threading.RLock()
 
 
 def _inject_app_styles() -> None:
@@ -317,6 +325,8 @@ AVAILABLE_NOISE_TYPES: Sequence[str] = (
     "morphic-field",
     "metaliminal",
     "supraliminal",
+    "ultraliminal",
+    "superliminal",
     "phantomliminal",
     "binaural",
     "none",
@@ -382,19 +392,48 @@ def _synthesize_affirmations(
     raise RuntimeError(message)
 
 
+def _ensure_pyttsx3_engine() -> "PyTTSX3Engine":
+    import pyttsx3
+
+    global _PYTTSX3_ENGINE
+    if _PYTTSX3_ENGINE is None:
+        with _PYTTSX3_LOCK:
+            if _PYTTSX3_ENGINE is None:
+                _PYTTSX3_ENGINE = pyttsx3.init()
+    return _PYTTSX3_ENGINE  # type: ignore[return-value]
+
+
+def _reset_pyttsx3_engine() -> None:
+    global _PYTTSX3_ENGINE
+    with _PYTTSX3_LOCK:
+        if _PYTTSX3_ENGINE is not None:
+            with contextlib.suppress(Exception):
+                _PYTTSX3_ENGINE.stop()
+        _PYTTSX3_ENGINE = None
+
+
 def _synthesize_with_pyttsx3(*, text: str, rate: int, volume: float) -> AudioSegment:
     import pyttsx3
 
-    engine = pyttsx3.init()
-    engine.setProperty("rate", rate)
-    engine.setProperty("volume", max(0.0, min(volume, 1.0)))
+    engine = _ensure_pyttsx3_engine()
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
         temp_path = Path(tmp_file.name)
 
     try:
-        engine.save_to_file(text, str(temp_path))
-        engine.runAndWait()
+        with _PYTTSX3_LOCK:
+            engine.stop()
+            engine.setProperty("rate", rate)
+            engine.setProperty("volume", max(0.0, min(volume, 1.0)))
+            engine.save_to_file(text, str(temp_path))
+            try:
+                engine.runAndWait()
+            except ReferenceError as exc:
+                _reset_pyttsx3_engine()
+                raise RuntimeError(
+                    "pyttsx3 driver lost its voice reference. The engine has been reset; "
+                    "try running the synthesis again or install system voices."
+                ) from exc
         if not temp_path.exists() or temp_path.stat().st_size == 0:
             raise RuntimeError("pyttsx3 completed but emitted an empty file. Ensure system voices are installed.")
         return AudioSegment.from_file(temp_path, format="wav")
@@ -535,6 +574,22 @@ def _build_supraliminal(duration_ms: int) -> AudioSegment:
     return airy.overlay(bright).overlay(shimmer)
 
 
+def _build_ultraliminal(duration_ms: int) -> AudioSegment:
+    hyper_high = _color_noise(duration_ms, high_pass=5200, gain=-26)
+    shimmer = _color_noise(duration_ms, high_pass=6800, gain=-24)
+    carrier = Sine(14800).to_audio_segment(duration=duration_ms).apply_gain(-32)
+    pulse = Sine(1111).to_audio_segment(duration=duration_ms).apply_gain(-24).pan(0.35)
+    return hyper_high.overlay(shimmer).overlay(carrier).overlay(pulse)
+
+
+def _build_superliminal(duration_ms: int) -> AudioSegment:
+    clarity = _color_noise(duration_ms, high_pass=1800, gain=-16)
+    warmth = _color_noise(duration_ms, low_pass=1600, gain=-18)
+    lead = Sine(528).to_audio_segment(duration=duration_ms).apply_gain(-15)
+    halo = Sine(963).to_audio_segment(duration=duration_ms).apply_gain(-22).pan(-0.2)
+    return clarity.overlay(warmth).overlay(lead).overlay(halo)
+
+
 def _build_phantomliminal(duration_ms: int) -> AudioSegment:
     hush = _color_noise(duration_ms, low_pass=600, gain=-26)
     hiss = _color_noise(duration_ms, high_pass=3200, gain=-32)
@@ -617,6 +672,10 @@ def _build_noise(noise_type: str, duration_ms: int) -> AudioSegment:
         return _build_metaliminal(duration_ms)
     if key == "supraliminal":
         return _build_supraliminal(duration_ms)
+    if key == "ultraliminal":
+        return _build_ultraliminal(duration_ms)
+    if key == "superliminal":
+        return _build_superliminal(duration_ms)
     if key == "phantomliminal":
         return _build_phantomliminal(duration_ms)
     if key == "none":

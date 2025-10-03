@@ -102,7 +102,7 @@ Add `--no-benchmark` if you only need dependency checks without rendering audio.
 - Recursive auto-layered ambience with per-layer variation controls,
   unlimited layer counts, and adaptive/recursive/iterative engines
 - Rainbow-inspired colour noise palette plus morphic field, metaliminal,
-  supraliminal, phantomliminal, and an expanded binaural beat suite (delta,
+  supraliminal, ultraliminal, superliminal, phantomliminal, and an expanded binaural beat suite (delta,
   theta, alpha, beta, gamma, epsilon, lambda, mu)
 - Additional soundscapes including center pulse, subconscious hack, conscious
   hack, and mind hijack beds designed to intensify subconscious and conscious
