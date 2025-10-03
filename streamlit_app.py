@@ -931,6 +931,60 @@ def _render_ai_tab():
     )
 
 
+def _render_diagnostics_tab():
+    st.subheader("Diagnostics & Benchmark")
+    st.write(
+        "Run environment checks to identify missing dependencies and optionally render a "
+        "short diagnostic mix to verify the audio pipeline end-to-end."
+    )
+
+    include_benchmark = st.checkbox(
+        "Include audio rendering benchmark",
+        value=True,
+        key="diagnostics_include_benchmark",
+    )
+
+    if st.button("Run diagnostics", key="run_diagnostics"):
+        with st.spinner("Collecting diagnostics..."):
+            try:
+                automation_agent = importlib.import_module("automation_agent")
+                results = automation_agent.run_diagnostics(include_benchmark=include_benchmark)
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Diagnostics failed: {exc}")
+                st.session_state.pop("diagnostic_results", None)
+                return
+        st.session_state["diagnostic_results"] = results
+
+    results = st.session_state.get("diagnostic_results")
+    if not results:
+        st.info("Diagnostics have not been run in this session yet.")
+        return
+
+    icon_map = {"pass": "✅", "warn": "⚠️", "fail": "❌"}
+    for result in results:
+        icon = icon_map.get(result.status, "•")
+        duration = f"{result.duration:.2f}s" if result.duration is not None else "—"
+        details = result.details or "All checks completed successfully."
+        st.markdown(
+            f"{icon} **{result.name}** — `{result.status.upper()}` ({duration})\n\n{details}",
+            unsafe_allow_html=False,
+        )
+
+    failures = [r for r in results if getattr(r, "status", "") == "fail"]
+    warnings = [r for r in results if getattr(r, "status", "") == "warn"]
+
+    if failures:
+        st.error(
+            "One or more diagnostics failed. Resolve the items above before running the automation agent."
+        )
+    elif warnings:
+        st.warning(
+            "Diagnostics completed with warnings. Some automation features may be limited until they are addressed."
+        )
+    else:
+        st.success("All diagnostics passed. You're ready to generate and publish mixes.")
+
+
 def run() -> None:
     st.set_page_config(page_title="Subliminal Audio Studio", page_icon="🎧", layout="wide")
     _inject_app_styles()
@@ -940,11 +994,13 @@ def run() -> None:
     )
     st.markdown('<div class="pulse-divider"></div>', unsafe_allow_html=True)
 
-    tabs = st.tabs(["Manual", "AI Agent"])
+    tabs = st.tabs(["Manual", "AI Agent", "Diagnostics"])
     with tabs[0]:
         _render_manual_tab()
     with tabs[1]:
         _render_ai_tab()
+    with tabs[2]:
+        _render_diagnostics_tab()
 
 
 if __name__ == "__main__":

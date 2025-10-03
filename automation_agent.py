@@ -34,18 +34,22 @@ to select manual or automatic mode.
 
 from __future__ import annotations
 
+import argparse
 import base64
 import importlib
 import importlib.util
 import json
 import os
 import random
+import shutil
 import sys
+import tempfile
 import time
-from getpass import getpass
+import traceback
 from dataclasses import dataclass
+from getpass import getpass
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     from openai import OpenAI as OpenAIClient
@@ -58,6 +62,16 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 
 _GOOGLE_CLIENT_CACHE: Optional[Tuple] = None
+
+
+@dataclass
+class DiagnosticResult:
+    """Result of an environment diagnostic check."""
+
+    name: str
+    status: Literal["pass", "fail", "warn"]
+    details: str = ""
+    duration: Optional[float] = None
 
 
 def _load_google_client_dependencies():
@@ -838,6 +852,176 @@ def run_single_workflow(
     )
 
 
+# --- Diagnostics & benchmarking -----------------------------------------------------
+
+
+def _human_readable_bytes(size: int) -> str:
+    if size <= 0:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    idx = 0
+    value = float(size)
+    while value >= 1024 and idx < len(units) - 1:
+        value /= 1024
+        idx += 1
+    return f"{value:.2f} {units[idx]}"
+
+
+def _summarize_exception(exc: BaseException) -> str:
+    tail = "\n".join(traceback.format_exc().strip().splitlines()[-3:])
+    return f"{exc.__class__.__name__}: {exc}\n{tail}".strip()
+
+
+def run_diagnostics(include_benchmark: bool = True) -> List[DiagnosticResult]:
+    """Run environment diagnostics and optional audio generator benchmark."""
+
+    results: List[DiagnosticResult] = []
+
+    def record(
+        name: str,
+        func: Callable[[], Tuple[str, str] | Tuple[str] | str | None],
+    ) -> None:
+        start = time.perf_counter()
+        status: Literal["pass", "fail", "warn"] = "pass"
+        details = ""
+        try:
+            outcome = func()
+            if isinstance(outcome, tuple):
+                if len(outcome) == 2:
+                    status, details = outcome  # type: ignore[misc]
+                elif len(outcome) == 1:
+                    (details,) = outcome
+            elif isinstance(outcome, str):
+                details = outcome
+        except Exception as exc:  # noqa: BLE001
+            status = "fail"
+            details = _summarize_exception(exc)
+        duration = time.perf_counter() - start
+        results.append(DiagnosticResult(name=name, status=status, details=details.strip(), duration=duration))
+
+    def check_python_version() -> Tuple[str, str]:
+        version = ".".join(str(part) for part in sys.version_info[:3])
+        if sys.version_info < (3, 9):
+            return "warn", f"Python {version} detected. Python 3.9+ is recommended."
+        return "pass", f"Python {version} detected."
+
+    def check_ffmpeg() -> Tuple[str, str]:
+        from pydub import AudioSegment
+
+        converter = AudioSegment.converter
+        if not converter:
+            return "warn", "pydub could not determine the ffmpeg binary location."
+        converter_path = Path(converter)
+        if not converter_path.exists():
+            return "warn", f"Expected ffmpeg at {converter_path}, but it was not found."
+        return "pass", f"ffmpeg located at {converter_path}"
+
+    def check_pyttsx3() -> Tuple[str, str]:
+        if importlib.util.find_spec("pyttsx3") is None:
+            return "warn", "pyttsx3 is not installed. Install it to enable speech synthesis."
+        import pyttsx3
+
+        engine = pyttsx3.init()
+        try:
+            voices = engine.getProperty("voices") or []
+        finally:
+            engine.stop()
+        if voices:
+            return "pass", f"pyttsx3 initialised with {len(voices)} available voices."
+        return "warn", "pyttsx3 initialised but no voices were reported."
+
+    def check_openai_package() -> Tuple[str, str]:
+        if importlib.util.find_spec("openai") is None:
+            return "warn", "openai package missing. Install it to enable AI workflows."
+        return "pass", "openai package available."
+
+    def check_google_clients() -> Tuple[str, str]:
+        try:
+            _load_google_client_dependencies()
+        except ModuleNotFoundError as exc:
+            return "warn", str(exc)
+        return "pass", "Google API client libraries available."
+
+    def check_selenium() -> Tuple[str, str]:
+        if shutil.which("chromedriver") is None:
+            return "warn", "ChromeDriver not found on PATH. Provide CHROMEDRIVER_PATH or install it."
+        return "pass", "ChromeDriver detected on PATH."
+
+    def check_streamlit_generator() -> Tuple[str, str]:
+        module_name = generate_subliminal_audio.__module__
+        return "pass", f"Using {module_name}.{generate_subliminal_audio.__name__}"
+
+    def benchmark_generator() -> Tuple[str, str]:
+        sample_affirmations = [
+            "I command my subconscious to absorb aligned truths.",
+            "My conscious mind welcomes empowered focus.",
+            "Every breath layers confidence through my aura.",
+        ]
+        with tempfile.TemporaryDirectory(prefix="subliminal_diag_") as tmp_dir:
+            output_path = generate_subliminal_audio(
+                noise_type="center-pulse",
+                affirmations=sample_affirmations,
+                playback_speed=1.0,
+                output_dir=tmp_dir,
+                voice_rate=150,
+                voice_volume=0.85,
+                base_filename="diagnostic_mix",
+                auto_layer=True,
+                layer_count=2,
+                layer_variation=0.35,
+                layer_seed=1234,
+                center_focus=0.6,
+                subconscious_intensity=0.4,
+                conscious_intensity=0.25,
+                override_intensity=0.35,
+            )
+            size = output_path.stat().st_size
+        return "pass", f"Generated diagnostic mix ({_human_readable_bytes(size)})."
+
+    record("Python version", check_python_version)
+    record("ffmpeg availability", check_ffmpeg)
+    record("pyttsx3 speech engine", check_pyttsx3)
+    record("openai package", check_openai_package)
+    record("Google client libraries", check_google_clients)
+    record("ChromeDriver", check_selenium)
+    record("Streamlit generator", check_streamlit_generator)
+    if include_benchmark:
+        record("Audio generator benchmark", benchmark_generator)
+
+    return results
+
+
+def run_diagnostics_cli(include_benchmark: bool = True) -> None:
+    """Pretty-print diagnostics to the console."""
+
+    results = run_diagnostics(include_benchmark=include_benchmark)
+    if not results:
+        print("No diagnostics were executed.")
+        return
+
+    name_width = max(len(result.name) for result in results) + 2
+    status_icons = {"pass": "✔", "warn": "⚠", "fail": "✖"}
+
+    print("\nDiagnostic report")
+    print("=" * (name_width + 32))
+
+    for result in results:
+        icon = status_icons.get(result.status, "•")
+        duration = f"{result.duration:.2f}s" if result.duration is not None else "-"
+        details = result.details.replace("\n", " ").strip()
+        print(f"{icon} {result.name.ljust(name_width)} {result.status.upper():<5} {duration:>8}  {details}")
+
+    failures = [r for r in results if r.status == "fail"]
+    warnings = [r for r in results if r.status == "warn"]
+
+    if failures:
+        print("\nOne or more diagnostics failed. Review the details above before running automation workflows.")
+    elif warnings:
+        print("\nDiagnostics completed with warnings. Some features may be unavailable until they are addressed.")
+    else:
+        print("\nAll diagnostics passed. The automation agent is ready to run.")
+
+
 def run_manual_mode(openai_client: "OpenAIClient", youtube_client) -> None:
     while True:
         settings = collect_manual_settings(require_theme=True)
@@ -861,7 +1045,25 @@ def run_auto_mode(openai_client: "OpenAIClient", youtube_client, interval_minute
         time.sleep(interval_minutes * 60)
 
 
-def main() -> None:
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description="Subliminal automation agent")
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="Run environment diagnostics and exit.",
+    )
+    parser.add_argument(
+        "--no-benchmark",
+        action="store_true",
+        help="Skip the audio rendering benchmark during diagnostics.",
+    )
+
+    args = parser.parse_args(argv)
+
+    if args.diagnostics:
+        run_diagnostics_cli(include_benchmark=not args.no_benchmark)
+        return
+
     client_secrets_env = os.environ.get("GOOGLE_CLIENT_SECRETS")
     client_secrets_path = Path(client_secrets_env).expanduser() if client_secrets_env else None
     token_path = Path(os.environ.get("YOUTUBE_TOKEN", "token.json")).expanduser()
@@ -870,13 +1072,21 @@ def main() -> None:
     print("  [1] Manual generator (no AI agent)")
     print("  [2] AI agent – manual confirmation")
     print("  [3] AI agent – automated schedule")
-    selection = prompt_user("Choose an option (1/2/3): ", {"1", "2", "3"})
+    print("  [4] Diagnostics & benchmark")
+    selection = prompt_user("Choose an option (1/2/3/4): ", {"1", "2", "3", "4"})
 
     if selection == "1":
         run_basic_generator(
             client_secrets_path=client_secrets_path,
             token_path=token_path,
         )
+        return
+
+    if selection == "4":
+        include_benchmark = (
+            prompt_user("Run the audio benchmark? (Y/N): ", {"y", "n"}).lower() == "y"
+        )
+        run_diagnostics_cli(include_benchmark=include_benchmark)
         return
 
     openai_client = build_openai_client()
@@ -894,5 +1104,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])
 

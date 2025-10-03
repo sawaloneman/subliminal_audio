@@ -23,9 +23,10 @@ pip install -r requirements.txt
 ### Streamlit application
 
 Launch the Streamlit interface to experiment with the generator in your
-browser. The app provides two tabs: a fully manual workflow and an AI-assisted
-experience that uses OpenAI to suggest affirmations and metadata. The manual
-tab does not require any API keys. Both modes now expose the recursive
+browser. The app provides three tabs: a fully manual workflow, an AI-assisted
+experience that uses OpenAI to suggest affirmations and metadata, and a
+diagnostics surface that can benchmark the audio pipeline. The manual tab does
+not require any API keys. Both modes now expose the recursive
 auto-layering controls so you can stack subtly different ambience beds without
 leaving the UI. New center technique, subconscious hack, conscious hack, and
 mind override sliders let you fine-tune how aggressively the mix targets the
@@ -62,6 +63,8 @@ On startup the script offers three options:
    conversion and publishing.
 3. **AI agent – automated schedule** – run every five minutes with randomized
    settings.
+4. **Diagnostics & benchmark** – run environment checks and optionally render a
+   sample mix to confirm the generator is operating correctly.
 
 If the `OPENAI_API_KEY` environment variable is not set, the agent will prompt
 you to securely enter the key at runtime. When a `GOOGLE_CLIENT_SECRETS` path
@@ -77,6 +80,15 @@ If your Streamlit module or generator function are named differently, export
 can import the correct callable. When unset, it searches common module names
 such as `streamlit_app`, `app`, `main`, and `subliminal` for a
 `generate_subliminal_audio` function.
+
+To run diagnostics from the command line without entering the interactive
+prompt, execute:
+
+```bash
+python3 automation_agent.py --diagnostics
+```
+
+Add `--no-benchmark` if you only need dependency checks without rendering audio.
 
 ## Features
 
@@ -95,6 +107,8 @@ such as `streamlit_app`, `app`, `main`, and `subliminal` for a
   user-specified theme
 - Combine multiple audio tracks
 - Export audio to a file
+- Built-in diagnostics and benchmarking to verify dependencies and audio
+  rendering end-to-end
 
 ## Requirements
 
