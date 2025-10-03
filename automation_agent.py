@@ -185,6 +185,15 @@ AFFIRMATION_COUNT_OPTIONS: Sequence[int] = (5, 8, 10, 12, 15, 20)
 
 PLAYBACK_SPEED_OPTIONS: Sequence[float] = (0.75, 1.0, 1.15, 1.25, 1.5)
 
+AFFIRMATION_THEME_OPTIONS: Sequence[str] = (
+    "Calm confidence",
+    "Deep sleep",
+    "Wealth mindset",
+    "Self-love",
+    "Productivity focus",
+    "Motivation boost",
+)
+
 LAYER_COUNT_OPTIONS: Sequence[int] = (1, 2, 3, 4, 5)
 LAYER_VARIATION_OPTIONS: Sequence[float] = (0.25, 0.35, 0.45, 0.55, 0.65)
 
@@ -201,6 +210,7 @@ class GeneratorSettings:
     noise_type: str
     affirmation_count: int
     playback_speed: float
+    theme: str = "Calm focus"
     auto_layer: bool = True
     layer_count: int = 3
     layer_variation: float = 0.4
@@ -299,7 +309,7 @@ def generate_affirmations(client: "OpenAIClient", theme: str, count: int) -> Lis
 
 
 def generate_metadata(
-    client: "OpenAIClient", affirmations: Sequence[str], noise_type: str
+    client: "OpenAIClient", affirmations: Sequence[str], noise_type: str, theme: str
 ) -> Tuple[str, str, str]:
     joined_affirmations = "\n".join(f"- {a}" for a in affirmations)
     prompt = (
@@ -308,6 +318,7 @@ def generate_metadata(
         "suitable for text-to-image generation. Return a JSON object with "
         "keys: title, description, thumbnail_prompt.\n\n"
         f"Noise type: {noise_type}\n"
+        f"Theme: {theme}\n"
         f"Affirmations:\n{joined_affirmations}"
     )
     response = client.responses.create(
@@ -491,6 +502,7 @@ def choose_random_settings() -> GeneratorSettings:
         noise_type=random.choice(load_noise_options()),
         affirmation_count=random.choice(AFFIRMATION_COUNT_OPTIONS),
         playback_speed=random.choice(PLAYBACK_SPEED_OPTIONS),
+        theme=random.choice(AFFIRMATION_THEME_OPTIONS),
         auto_layer=True,
         layer_count=random.choice(LAYER_COUNT_OPTIONS[1:]),
         layer_variation=random.choice(LAYER_VARIATION_OPTIONS),
@@ -498,7 +510,7 @@ def choose_random_settings() -> GeneratorSettings:
     )
 
 
-def collect_manual_settings() -> Optional[GeneratorSettings]:
+def collect_manual_settings(*, require_theme: bool = False) -> Optional[GeneratorSettings]:
     response = prompt_user("Do you want to generate a new video? (Y/N): ", {"y", "n"}).lower()
     if response != "y":
         return None
@@ -514,6 +526,14 @@ def collect_manual_settings() -> Optional[GeneratorSettings]:
             noise_type = noise_options[int(selection) - 1]
             break
         print("Invalid selection. Please try again.")
+
+    theme = "Calm focus"
+    if require_theme:
+        theme_input = prompt_user(
+            "Affirmation theme (e.g. Calm confidence): "
+        ).strip()
+        if theme_input:
+            theme = theme_input
 
     while True:
         affirmation_count_input = prompt_user("Number of affirmations: ")
@@ -567,6 +587,7 @@ def collect_manual_settings() -> Optional[GeneratorSettings]:
         noise_type=noise_type,
         affirmation_count=affirmation_count,
         playback_speed=playback_speed,
+        theme=theme,
         auto_layer=auto_layer,
         layer_count=layer_count,
         layer_variation=layer_variation,
@@ -710,12 +731,14 @@ def run_single_workflow(
     stem = build_output_stem(settings)
     session_dir = ensure_directory(base_output_dir / stem)
 
-    affirmations = generate_affirmations(openai_client, settings.noise_type, settings.affirmation_count)
+    affirmations = generate_affirmations(openai_client, settings.theme, settings.affirmation_count)
     if not affirmations:
         raise ValueError("OpenAI did not return any affirmations.")
     text_path = save_affirmations(affirmations, session_dir, stem)
 
-    title, description, thumbnail_prompt = generate_metadata(openai_client, affirmations, settings.noise_type)
+    title, description, thumbnail_prompt = generate_metadata(
+        openai_client, affirmations, settings.noise_type, settings.theme
+    )
 
     audio_path = render_audio(generator, settings, affirmations, session_dir)
 
@@ -751,7 +774,7 @@ def run_single_workflow(
 
 def run_manual_mode(openai_client: "OpenAIClient", youtube_client) -> None:
     while True:
-        settings = collect_manual_settings()
+        settings = collect_manual_settings(require_theme=True)
         if settings is None:
             print("Exiting manual mode.")
             return

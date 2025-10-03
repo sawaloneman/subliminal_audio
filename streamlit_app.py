@@ -324,7 +324,9 @@ def _render_ai_tab():
         client = OpenAI(api_key=api_key)
 
         affirmations = helpers["generate_affirmations"](client, theme, count)
-        title, description, thumbnail_prompt = helpers["generate_metadata"](client, affirmations, noise_type)
+        title, description, thumbnail_prompt = helpers["generate_metadata"](
+            client, affirmations, noise_type, theme
+        )
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="subliminal_ai_"))
         audio_path = generate_subliminal_audio(
@@ -349,6 +351,7 @@ def _render_ai_tab():
         return
 
     st.success("AI workflow completed.")
+    st.write(f"**Theme:** {theme}")
     st.write(f"**Title:** {title}")
     st.write("**Description:**")
     st.write(description)
