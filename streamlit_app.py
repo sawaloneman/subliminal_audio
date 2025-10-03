@@ -335,13 +335,15 @@ def _synthesize_affirmations(
     engine.setProperty("volume", max(0.0, min(volume, 1.0)))
 
     text = " \n".join(affirmations)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
         temp_path = Path(tmp_file.name)
 
     try:
         engine.save_to_file(text, str(temp_path))
         engine.runAndWait()
-        segment = AudioSegment.from_file(temp_path)
+        if not temp_path.exists() or temp_path.stat().st_size == 0:
+            raise RuntimeError("Text-to-speech engine did not produce audio output.")
+        segment = AudioSegment.from_file(temp_path, format="wav")
     finally:
         temp_path.unlink(missing_ok=True)
 
