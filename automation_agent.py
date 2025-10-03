@@ -236,12 +236,19 @@ AFFIRMATION_THEME_OPTIONS: Sequence[str] = (
     "Motivation boost",
 )
 
-LAYER_COUNT_OPTIONS: Sequence[int] = (1, 2, 3, 4, 5)
+LAYER_COUNT_OPTIONS: Sequence[int] = tuple(range(1, 13))
+LAYER_STRATEGY_OPTIONS: Sequence[str] = ("adaptive", "recursive", "iterative")
 LAYER_VARIATION_OPTIONS: Sequence[float] = (0.25, 0.35, 0.45, 0.55, 0.65)
 CENTER_FOCUS_OPTIONS: Sequence[float] = (0.3, 0.45, 0.55, 0.65, 0.75)
 SUBCONSCIOUS_INTENSITY_OPTIONS: Sequence[float] = (0.2, 0.35, 0.45, 0.55, 0.65)
 CONSCIOUS_INTENSITY_OPTIONS: Sequence[float] = (0.1, 0.2, 0.3, 0.4, 0.5)
 OVERRIDE_INTENSITY_OPTIONS: Sequence[float] = (0.2, 0.3, 0.4, 0.5, 0.6)
+
+LAYER_STRATEGY_DESCRIPTIONS: Dict[str, str] = {
+    "adaptive": "Adaptive (auto-switch between recursion and iteration)",
+    "recursive": "Recursive (raises recursion limit for unlimited stacking)",
+    "iterative": "Iterative (stack-safe without deep recursion)",
+}
 
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
@@ -261,6 +268,7 @@ class GeneratorSettings:
     layer_count: int = 3
     layer_variation: float = 0.4
     layer_seed: Optional[int] = None
+    layer_strategy: str = "adaptive"
     center_focus: float = 0.55
     subconscious_intensity: float = 0.4
     conscious_intensity: float = 0.25
@@ -421,6 +429,7 @@ def render_audio(
         subconscious_intensity=settings.subconscious_intensity,
         conscious_intensity=settings.conscious_intensity,
         override_intensity=settings.override_intensity,
+        layer_strategy=settings.layer_strategy,
     )
     if settings.layer_seed is not None:
         generator_kwargs["layer_seed"] = settings.layer_seed
@@ -561,6 +570,7 @@ def choose_random_settings() -> GeneratorSettings:
         layer_count=random.choice(LAYER_COUNT_OPTIONS[1:]),
         layer_variation=random.choice(LAYER_VARIATION_OPTIONS),
         layer_seed=random.randint(0, 9999),
+        layer_strategy=random.choice(LAYER_STRATEGY_OPTIONS),
         center_focus=random.choice(CENTER_FOCUS_OPTIONS),
         subconscious_intensity=random.choice(SUBCONSCIOUS_INTENSITY_OPTIONS),
         conscious_intensity=random.choice(CONSCIOUS_INTENSITY_OPTIONS),
@@ -615,6 +625,7 @@ def collect_manual_settings(*, require_theme: bool = False) -> Optional[Generato
     layer_count = 1
     layer_variation = 0.0
     layer_seed: Optional[int] = None
+    layer_strategy = "adaptive"
 
     if auto_layer:
         while True:
@@ -640,6 +651,18 @@ def collect_manual_settings(*, require_theme: bool = False) -> Optional[Generato
                 layer_seed = int(seed_input)
             except ValueError:
                 print("Seed must be numeric. Leaving it unset.")
+
+        print("Available layering strategies:")
+        for idx, option in enumerate(LAYER_STRATEGY_OPTIONS, start=1):
+            description = LAYER_STRATEGY_DESCRIPTIONS.get(option, option)
+            print(f"  {idx}. {description}")
+
+        while True:
+            strategy_choice = prompt_user("Select layering strategy by number: ")
+            if strategy_choice.isdigit() and 1 <= int(strategy_choice) <= len(LAYER_STRATEGY_OPTIONS):
+                layer_strategy = LAYER_STRATEGY_OPTIONS[int(strategy_choice) - 1]
+                break
+            print("Invalid selection. Please choose a valid layering strategy number.")
 
     def ask_ratio(label: str, default: float) -> float:
         while True:
@@ -669,6 +692,7 @@ def collect_manual_settings(*, require_theme: bool = False) -> Optional[Generato
         layer_count=layer_count,
         layer_variation=layer_variation,
         layer_seed=layer_seed,
+        layer_strategy=layer_strategy,
         center_focus=center_focus,
         subconscious_intensity=subconscious_intensity,
         conscious_intensity=conscious_intensity,

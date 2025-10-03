@@ -32,6 +32,11 @@ leaving the UI. New center technique, subconscious hack, conscious hack, and
 mind override sliders let you fine-tune how aggressively the mix targets the
 listener's focus and subconscious uptake.
 
+Layer counts are no longer capped: both the Streamlit app and automation agent
+accept any positive integer for recursive layering and expose adaptive,
+fully-recursive, or iterative engines so you can dial in unlimited ambient
+stacks without running into Python's default recursion limit.
+
 ```bash
 streamlit run streamlit_app.py
 ```
@@ -94,7 +99,8 @@ Add `--no-benchmark` if you only need dependency checks without rendering audio.
 
 - Text to speech conversion
 - Adjust playback speed
-- Recursive auto-layered ambience with per-layer variation controls
+- Recursive auto-layered ambience with per-layer variation controls,
+  unlimited layer counts, and adaptive/recursive/iterative engines
 - Rainbow-inspired colour noise palette plus morphic field, metaliminal,
   supraliminal, phantomliminal, and an expanded binaural beat suite (delta,
   theta, alpha, beta, gamma, epsilon, lambda, mu)

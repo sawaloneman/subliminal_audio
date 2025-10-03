@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import os
 import random
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Iterator, Optional, Sequence
 
 import streamlit as st
 from pydub import AudioSegment, effects
@@ -321,6 +323,17 @@ AVAILABLE_NOISE_TYPES: Sequence[str] = (
 )
 
 
+LAYER_STRATEGY_OPTIONS: Sequence[str] = ("adaptive", "recursive", "iterative")
+
+LAYER_STRATEGY_LABELS = {
+    "Adaptive (auto switch)": "adaptive",
+    "Recursive (expand limit)": "recursive",
+    "Iterative (stack-safe)": "iterative",
+}
+
+LAYER_STRATEGY_BY_KEY = {value: label for label, value in LAYER_STRATEGY_LABELS.items()}
+
+
 def _sanitize_filename(name: str) -> str:
     return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in name)
 
@@ -619,6 +632,27 @@ def _ensure_duration(track: AudioSegment, target_ms: int) -> AudioSegment:
     return extended[:target_ms]
 
 
+@contextlib.contextmanager
+def _temporary_recursion_limit(limit: int) -> Iterator[None]:
+    """Temporarily raise the recursion limit when deep layering is requested."""
+
+    limit = int(limit)
+    if limit <= 0:
+        yield
+        return
+
+    original_limit = sys.getrecursionlimit()
+    if limit <= original_limit:
+        yield
+        return
+
+    sys.setrecursionlimit(limit)
+    try:
+        yield
+    finally:
+        sys.setrecursionlimit(original_limit)
+
+
 def _apply_layer_variation(
     segment: AudioSegment,
     *,
@@ -715,10 +749,12 @@ def auto_layer_noise(
     layer_count: int,
     variation_strength: float,
     seed: Optional[int] = None,
+    strategy: str = "adaptive",
 ) -> AudioSegment:
     """Recursively build a layered ambient bed with subtle variation."""
 
-    layer_count = max(1, layer_count)
+    layer_count = max(1, int(layer_count))
+    strategy = strategy if strategy in LAYER_STRATEGY_OPTIONS else "adaptive"
     rng = random.Random(seed)
 
     def _build_variant(index: int) -> AudioSegment:
@@ -731,15 +767,44 @@ def auto_layer_noise(
             target_duration=duration_ms,
         )
 
+    target_layers = layer_count
+
     def _recursive_overlay(current_index: int, acc: AudioSegment) -> AudioSegment:
-        if current_index >= layer_count:
+        if current_index >= target_layers:
             return acc
         next_layer = _build_variant(current_index)
         combined = acc.overlay(next_layer, gain_during_overlay=-1)
         return _recursive_overlay(current_index + 1, combined)
 
-    base_layer = _build_variant(0)
-    return _recursive_overlay(1, base_layer)
+    def _overlay_iteratively() -> AudioSegment:
+        combined = _build_variant(0)
+        for idx in range(1, target_layers):
+            next_layer = _build_variant(idx)
+            combined = combined.overlay(next_layer, gain_during_overlay=-1)
+        return combined
+
+    def _overlay_recursively() -> AudioSegment:
+        base_layer = _build_variant(0)
+        safe_limit = max(sys.getrecursionlimit(), target_layers + 50)
+        with _temporary_recursion_limit(safe_limit):
+            return _recursive_overlay(1, base_layer)
+
+    if strategy == "iterative":
+        return _overlay_iteratively()
+
+    if strategy == "recursive":
+        try:
+            return _overlay_recursively()
+        except RecursionError:
+            return _overlay_iteratively()
+
+    # Adaptive: prefer recursion for modest depths and fall back otherwise.
+    try:
+        if target_layers <= sys.getrecursionlimit() - 100:
+            return _overlay_recursively()
+    except RecursionError:
+        pass
+    return _overlay_iteratively()
 
 
 def generate_subliminal_audio(
@@ -755,6 +820,7 @@ def generate_subliminal_audio(
     layer_count: int = 3,
     layer_variation: float = 0.4,
     layer_seed: Optional[int] = None,
+    layer_strategy: str = "adaptive",
     center_focus: float = 0.5,
     subconscious_intensity: float = 0.35,
     conscious_intensity: float = 0.2,
@@ -779,6 +845,8 @@ def generate_subliminal_audio(
 
     duration_ms = len(speech)
 
+    strategy = layer_strategy if layer_strategy in LAYER_STRATEGY_OPTIONS else "adaptive"
+
     if auto_layer:
         noise = auto_layer_noise(
             noise_type,
@@ -786,6 +854,7 @@ def generate_subliminal_audio(
             layer_count=layer_count,
             variation_strength=max(0.0, min(layer_variation, 1.0)),
             seed=layer_seed,
+            strategy=strategy,
         )
     else:
         noise = _build_noise(noise_type, duration_ms)
@@ -832,8 +901,29 @@ def _render_manual_tab():
         voice_volume = st.slider("Voice volume", min_value=0.3, max_value=1.0, value=0.9, step=0.05)
         filename = st.text_input("Base file name", "subliminal_mix")
         auto_layer = st.checkbox("Auto-layer ambient bed", value=True)
-        layer_count = st.slider("Layer count", min_value=1, max_value=8, value=3)
-        layer_variation = st.slider("Layer variation", min_value=0.0, max_value=1.0, value=0.4, step=0.05)
+        if auto_layer:
+            layer_count = int(
+                st.number_input(
+                    "Layer count",
+                    min_value=1,
+                    value=3,
+                    step=1,
+                    help="Enter any positive integer to stack unlimited recursive layers.",
+                )
+            )
+            strategy_label_options = list(LAYER_STRATEGY_LABELS.keys())
+            layer_strategy_label = st.selectbox(
+                "Layering engine",
+                strategy_label_options,
+                index=strategy_label_options.index(LAYER_STRATEGY_BY_KEY["adaptive"]),
+                help="Choose adaptive, fully recursive, or iterative stacking for deep ambience.",
+            )
+        else:
+            layer_count = 1
+            layer_strategy_label = LAYER_STRATEGY_BY_KEY["adaptive"]
+        layer_variation = st.slider(
+            "Layer variation", min_value=0.0, max_value=1.0, value=0.4, step=0.05
+        )
         layer_seed_input = st.text_input("Layer seed (optional)", "")
         center_focus = st.slider("Center technique focus", min_value=0.0, max_value=1.0, value=0.55, step=0.05)
         subconscious_intensity = st.slider(
@@ -870,6 +960,8 @@ def _render_manual_tab():
     else:
         layer_seed = None
 
+    layer_strategy = LAYER_STRATEGY_LABELS.get(layer_strategy_label, "adaptive")
+
     tmp_dir = Path(tempfile.mkdtemp(prefix="subliminal_manual_"))
     audio_path = generate_subliminal_audio(
         noise_type=noise_type,
@@ -883,6 +975,7 @@ def _render_manual_tab():
         layer_count=layer_count,
         layer_variation=layer_variation,
         layer_seed=layer_seed,
+        layer_strategy=layer_strategy,
         center_focus=center_focus,
         subconscious_intensity=subconscious_intensity,
         conscious_intensity=conscious_intensity,
@@ -890,6 +983,9 @@ def _render_manual_tab():
     )
 
     st.success(f"Audio generated: {audio_path.name}")
+    st.write(
+        f"Layer engine: {layer_strategy_label} | Layers: {layer_count} | Variation: {layer_variation:.2f}"
+    )
     st.write(
         f"Center focus: {center_focus:.2f} | Subconscious hack: {subconscious_intensity:.2f} | "
         f"Conscious hack: {conscious_intensity:.2f} | Override: {override_intensity:.2f}"
@@ -913,8 +1009,28 @@ def _render_ai_tab():
         noise_type = st.selectbox("Noise profile", AVAILABLE_NOISE_TYPES[:-1], index=0)
         playback_speed = st.slider("Playback speed", min_value=0.5, max_value=2.0, value=1.0, step=0.05)
         auto_layer = st.checkbox("Auto-layer ambient bed", value=True)
-        layer_count = st.slider("Layer count", min_value=1, max_value=8, value=4)
-        layer_variation = st.slider("Layer variation", min_value=0.0, max_value=1.0, value=0.45, step=0.05)
+        if auto_layer:
+            layer_count = int(
+                st.number_input(
+                    "Layer count",
+                    min_value=1,
+                    value=4,
+                    step=1,
+                    help="Set any positive integer to drive unlimited recursive layering.",
+                )
+            )
+            strategy_label_options = list(LAYER_STRATEGY_LABELS.keys())
+            layer_strategy_label = st.selectbox(
+                "Layering engine",
+                strategy_label_options,
+                index=strategy_label_options.index(LAYER_STRATEGY_BY_KEY["adaptive"]),
+            )
+        else:
+            layer_count = 1
+            layer_strategy_label = LAYER_STRATEGY_BY_KEY["adaptive"]
+        layer_variation = st.slider(
+            "Layer variation", min_value=0.0, max_value=1.0, value=0.45, step=0.05
+        )
         layer_seed_input = st.text_input("Layer seed (optional)", "")
         center_focus = st.slider("Center technique focus", min_value=0.0, max_value=1.0, value=0.6, step=0.05)
         subconscious_intensity = st.slider(
@@ -946,6 +1062,8 @@ def _render_ai_tab():
     else:
         layer_seed = None
 
+    layer_strategy = LAYER_STRATEGY_LABELS.get(layer_strategy_label, "adaptive")
+
     try:
         helpers = _load_openai_helpers()
         OpenAI = helpers["OpenAI"]
@@ -967,6 +1085,7 @@ def _render_ai_tab():
             layer_count=layer_count,
             layer_variation=layer_variation,
             layer_seed=layer_seed,
+            layer_strategy=layer_strategy,
             center_focus=center_focus,
             subconscious_intensity=subconscious_intensity,
             conscious_intensity=conscious_intensity,
@@ -984,6 +1103,9 @@ def _render_ai_tab():
 
     st.success("AI workflow completed.")
     st.write(f"**Theme:** {theme}")
+    st.write(
+        f"Layer engine: {layer_strategy_label} | Layers: {layer_count} | Variation: {layer_variation:.2f}"
+    )
     st.write(
         f"**Center focus:** {center_focus:.2f} | Subconscious hack: {subconscious_intensity:.2f} | "
         f"Conscious hack: {conscious_intensity:.2f} | Override: {override_intensity:.2f}"
