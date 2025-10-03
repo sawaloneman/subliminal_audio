@@ -47,10 +47,21 @@ import sys
 import tempfile
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from getpass import getpass
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 if TYPE_CHECKING:
     from openai import OpenAI as OpenAIClient
@@ -275,6 +286,10 @@ class GeneratorSettings:
     subconscious_intensity: float = 0.4
     conscious_intensity: float = 0.25
     override_intensity: float = 0.35
+    ambient_profiles: Tuple[str, ...] = tuple()
+    profile_multipliers: Dict[str, int] = field(default_factory=dict)
+    voice_gain_db: float = 0.0
+    ambient_gain_db: float = 0.0
 
 
 @dataclass
@@ -369,15 +384,23 @@ def generate_affirmations(client: "OpenAIClient", theme: str, count: int) -> Lis
 
 
 def generate_metadata(
-    client: "OpenAIClient", affirmations: Sequence[str], noise_type: str, theme: str
+    client: "OpenAIClient", affirmations: Sequence[str], sound_palette: Sequence[str] | str, theme: str
 ) -> Tuple[str, str, str]:
+    if isinstance(sound_palette, str):
+        palette_list = [sound_palette]
+    else:
+        palette_list = list(sound_palette)
+    if not palette_list:
+        palette_list = ["silence"]
+    palette_label = ", ".join(dict.fromkeys(palette_list))
+
     joined_affirmations = "\n".join(f"- {a}" for a in affirmations)
     prompt = (
         "Create a compelling YouTube title and description for the following "
         "subliminal affirmations track. Also suggest a vivid thumbnail prompt "
         "suitable for text-to-image generation. Return a JSON object with "
         "keys: title, description, thumbnail_prompt.\n\n"
-        f"Noise type: {noise_type}\n"
+        f"Sound palette: {palette_label}\n"
         f"Theme: {theme}\n"
         f"Affirmations:\n{joined_affirmations}"
     )
@@ -421,6 +444,8 @@ def render_audio(
     ensure_directory(output_dir)
     generator_kwargs = dict(
         noise_type=settings.noise_type,
+        ambient_profiles=list(settings.ambient_profiles),
+        profile_multipliers=settings.profile_multipliers,
         affirmations=list(affirmations),
         playback_speed=settings.playback_speed,
         output_dir=str(output_dir),
@@ -432,6 +457,8 @@ def render_audio(
         conscious_intensity=settings.conscious_intensity,
         override_intensity=settings.override_intensity,
         layer_strategy=settings.layer_strategy,
+        voice_gain_db=settings.voice_gain_db,
+        ambient_gain_db=settings.ambient_gain_db,
     )
     if settings.layer_seed is not None:
         generator_kwargs["layer_seed"] = settings.layer_seed
@@ -563,8 +590,19 @@ def upload_video_to_youtube(
 
 
 def choose_random_settings() -> GeneratorSettings:
+    noise_options = list(load_noise_options())
+    primary = random.choice(noise_options)
+    extras_pool = [name for name in noise_options if name != primary]
+    extra_count = random.randint(0, min(3, len(extras_pool)))
+    extras = tuple(random.sample(extras_pool, extra_count))
+    multipliers: Dict[str, int] = {primary: random.randint(1, 3)}
+    for profile in extras:
+        multipliers[profile] = random.randint(1, 4)
+    voice_gain = random.choice([-9.0, -6.0, -3.0, 0.0, 3.0, 6.0])
+    ambient_gain = random.choice([-12.0, -6.0, -3.0, 0.0, 3.0, 6.0])
+
     return GeneratorSettings(
-        noise_type=random.choice(load_noise_options()),
+        noise_type=primary,
         affirmation_count=random.choice(AFFIRMATION_COUNT_OPTIONS),
         playback_speed=random.choice(PLAYBACK_SPEED_OPTIONS),
         theme=random.choice(AFFIRMATION_THEME_OPTIONS),
@@ -577,6 +615,10 @@ def choose_random_settings() -> GeneratorSettings:
         subconscious_intensity=random.choice(SUBCONSCIOUS_INTENSITY_OPTIONS),
         conscious_intensity=random.choice(CONSCIOUS_INTENSITY_OPTIONS),
         override_intensity=random.choice(OVERRIDE_INTENSITY_OPTIONS),
+        ambient_profiles=extras,
+        profile_multipliers=multipliers,
+        voice_gain_db=voice_gain,
+        ambient_gain_db=ambient_gain,
     )
 
 
@@ -596,6 +638,37 @@ def collect_manual_settings(*, require_theme: bool = False) -> Optional[Generato
             noise_type = noise_options[int(selection) - 1]
             break
         print("Invalid selection. Please try again.")
+
+    print(
+        "Specify additional ambience indices separated by commas. Append 'xN' to repeat a profile (e.g. 5x3). "
+        "Include the primary index to override its copy count. Press enter to skip."
+    )
+    ambient_profiles: List[str] = []
+    profile_multipliers: Dict[str, int] = {noise_type: 1}
+    extras_entry = prompt_user("Additional ambience: ").strip()
+    if extras_entry:
+        tokens = [token.strip().lower() for token in extras_entry.split(",") if token.strip()]
+        for token in tokens:
+            if "x" in token:
+                number_part, multiplier_part = token.split("x", 1)
+            else:
+                number_part, multiplier_part = token, "1"
+            if not number_part.isdigit():
+                print(f"Ignoring invalid ambience token: {token}")
+                continue
+            index = int(number_part)
+            if not 1 <= index <= len(noise_options):
+                print(f"Ambience index {index} is out of range.")
+                continue
+            profile = noise_options[index - 1]
+            try:
+                multiplier = int(multiplier_part)
+            except ValueError:
+                multiplier = 1
+            multiplier = max(1, multiplier)
+            profile_multipliers[profile] = multiplier
+            if profile != noise_type and profile not in ambient_profiles:
+                ambient_profiles.append(profile)
 
     theme = "Calm focus"
     if require_theme:
@@ -685,6 +758,23 @@ def collect_manual_settings(*, require_theme: bool = False) -> Optional[Generato
     conscious_intensity = ask_ratio("Conscious hack intensity", 0.25)
     override_intensity = ask_ratio("Mind override layering", 0.35)
 
+    def ask_gain(label: str, default: float) -> float:
+        while True:
+            raw = input(f"{label} gain (-100 to 100 dB, default {default:.1f}): ").strip()
+            if not raw:
+                return default
+            try:
+                value = float(raw)
+            except ValueError:
+                print("Gain must be a numeric value.")
+                continue
+            if -100.0 <= value <= 100.0:
+                return value
+            print("Gain must be between -100 and 100 dB.")
+
+    voice_gain_db = ask_gain("Voice", 0.0)
+    ambient_gain_db = ask_gain("Ambient", 0.0)
+
     settings = GeneratorSettings(
         noise_type=noise_type,
         affirmation_count=affirmation_count,
@@ -699,6 +789,10 @@ def collect_manual_settings(*, require_theme: bool = False) -> Optional[Generato
         subconscious_intensity=subconscious_intensity,
         conscious_intensity=conscious_intensity,
         override_intensity=override_intensity,
+        ambient_profiles=tuple(ambient_profiles),
+        profile_multipliers=profile_multipliers,
+        voice_gain_db=voice_gain_db,
+        ambient_gain_db=ambient_gain_db,
     )
 
     print("\nSelected configuration:")
@@ -816,13 +910,16 @@ def run_basic_generator(
             print("A thumbnail is required for upload. Skipping YouTube publishing.")
             continue
 
+        palette = [settings.noise_type, *settings.ambient_profiles]
+        tags = list(dict.fromkeys(palette + ["subliminal", "affirmations"]))
+
         video_id = upload_video_to_youtube(
             youtube_client,
             video_path=video_path,
             title=title,
             description=description,
             thumbnail_path=thumbnail_path,
-            tags=[settings.noise_type, "subliminal", "affirmations"],
+            tags=tags,
         )
         print(f"Video uploaded successfully: https://youtube.com/watch?v={video_id}")
 
@@ -843,8 +940,9 @@ def run_single_workflow(
         raise ValueError("OpenAI did not return any affirmations.")
     text_path = save_affirmations(affirmations, session_dir, stem)
 
+    palette = [settings.noise_type, *settings.ambient_profiles]
     title, description, thumbnail_prompt = generate_metadata(
-        openai_client, affirmations, settings.noise_type, settings.theme
+        openai_client, affirmations, palette, settings.theme
     )
 
     audio_path = render_audio(generator, settings, affirmations, session_dir)
@@ -867,7 +965,7 @@ def run_single_workflow(
             title=title,
             description=description,
             thumbnail_path=thumbnail_path,
-            tags=[settings.noise_type, "subliminal", "affirmations"],
+            tags=list(dict.fromkeys(palette + ["subliminal", "affirmations"])),
         )
         print(f"Video uploaded successfully. Video ID: {video_id}")
 
@@ -1023,6 +1121,8 @@ def run_diagnostics(include_benchmark: bool = True) -> List[DiagnosticResult]:
         with tempfile.TemporaryDirectory(prefix="subliminal_diag_") as tmp_dir:
             output_path = generate_subliminal_audio(
                 noise_type="center-pulse",
+                ambient_profiles=["morphic-field", "binaural-theta"],
+                profile_multipliers={"center-pulse": 2, "morphic-field": 3, "binaural-theta": 2},
                 affirmations=sample_affirmations,
                 playback_speed=1.0,
                 output_dir=tmp_dir,
@@ -1037,6 +1137,8 @@ def run_diagnostics(include_benchmark: bool = True) -> List[DiagnosticResult]:
                 subconscious_intensity=0.4,
                 conscious_intensity=0.25,
                 override_intensity=0.35,
+                voice_gain_db=3.0,
+                ambient_gain_db=-3.0,
             )
             size = output_path.stat().st_size
         return "pass", f"Generated diagnostic mix ({_human_readable_bytes(size)})."

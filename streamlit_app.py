@@ -12,7 +12,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterator, Optional, Sequence
+from typing import TYPE_CHECKING, Dict, Iterator, Mapping, Optional, Sequence
 
 import streamlit as st
 from pydub import AudioSegment, effects
@@ -331,6 +331,9 @@ AVAILABLE_NOISE_TYPES: Sequence[str] = (
     "binaural",
     "none",
 )
+
+
+DEFAULT_AMBIENT_SELECTION: Sequence[str] = ("rainbow", "morphic-field", "binaural-theta")
 
 
 LAYER_STRATEGY_OPTIONS: Sequence[str] = ("adaptive", "recursive", "iterative")
@@ -866,6 +869,82 @@ def auto_layer_noise(
     return _overlay_iteratively()
 
 
+def _compose_ambient_bed(
+    primary: str,
+    extras: Sequence[str],
+    duration_ms: int,
+    *,
+    auto_layer: bool,
+    layer_count: int,
+    variation_strength: float,
+    layer_seed: Optional[int],
+    strategy: str,
+    multipliers: Optional[Mapping[str, int]] = None,
+) -> AudioSegment:
+    """Blend multiple ambience profiles into a single layered bed."""
+
+    normalized_multipliers: Dict[str, int] = {}
+    for key, value in (multipliers or {}).items():
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            continue
+        if count < 1:
+            continue
+        normalized_multipliers[key] = count
+
+    order: list[str] = []
+    for name in [primary, *extras]:
+        if not name:
+            continue
+        if name not in order:
+            order.append(name)
+    for name in normalized_multipliers:
+        if name not in order:
+            order.append(name)
+
+    if not order:
+        return AudioSegment.silent(duration=duration_ms)
+
+    counts: Dict[str, int] = {
+        name: max(1, normalized_multipliers.get(name, 1)) for name in order
+    }
+
+    seed_rng = random.Random(layer_seed)
+    combined: Optional[AudioSegment] = None
+
+    for name in order:
+        repeat = counts.get(name, 1)
+        if name.lower() == "none":
+            if combined is None:
+                combined = AudioSegment.silent(duration=duration_ms)
+            continue
+        for _ in range(repeat):
+            local_seed: Optional[int] = None
+            if layer_seed is not None:
+                local_seed = seed_rng.randint(0, 2**31 - 1)
+            if auto_layer:
+                bed = auto_layer_noise(
+                    name,
+                    duration_ms,
+                    layer_count=layer_count,
+                    variation_strength=variation_strength,
+                    seed=local_seed,
+                    strategy=strategy,
+                )
+            else:
+                bed = _ensure_duration(_build_noise(name, duration_ms), duration_ms)
+            if combined is None or combined.rms == 0:
+                combined = bed
+            else:
+                combined = combined.overlay(bed, gain_during_overlay=-1.2)
+
+    if combined is None:
+        combined = _ensure_duration(_build_noise(primary, duration_ms), duration_ms)
+
+    return _ensure_duration(combined, duration_ms)
+
+
 def generate_subliminal_audio(
     *,
     noise_type: str,
@@ -884,6 +963,10 @@ def generate_subliminal_audio(
     subconscious_intensity: float = 0.35,
     conscious_intensity: float = 0.2,
     override_intensity: float = 0.3,
+    ambient_profiles: Optional[Sequence[str]] = None,
+    profile_multipliers: Optional[Mapping[str, int]] = None,
+    voice_gain_db: float = 0.0,
+    ambient_gain_db: float = 0.0,
 ) -> Path:
     """Create an audio file containing the affirmations mixed with ambient noise.
 
@@ -901,22 +984,26 @@ def generate_subliminal_audio(
 
     speech = _synthesize_affirmations(affirmations, rate=voice_rate, volume=voice_volume)
     speech = _change_speed(speech, playback_speed)
+    if voice_gain_db:
+        speech = speech.apply_gain(float(voice_gain_db))
 
     duration_ms = len(speech)
 
     strategy = layer_strategy if layer_strategy in LAYER_STRATEGY_OPTIONS else "adaptive"
 
-    if auto_layer:
-        noise = auto_layer_noise(
-            noise_type,
-            duration_ms,
-            layer_count=layer_count,
-            variation_strength=max(0.0, min(layer_variation, 1.0)),
-            seed=layer_seed,
-            strategy=strategy,
-        )
-    else:
-        noise = _build_noise(noise_type, duration_ms)
+    extras = list(ambient_profiles or [])
+    normalized_variation = max(0.0, min(layer_variation, 1.0))
+    noise = _compose_ambient_bed(
+        noise_type,
+        extras,
+        duration_ms,
+        auto_layer=auto_layer,
+        layer_count=layer_count,
+        variation_strength=normalized_variation,
+        layer_seed=layer_seed,
+        strategy=strategy,
+        multipliers=profile_multipliers,
+    )
 
     noise = _apply_center_focus(noise, center_focus=center_focus, duration_ms=duration_ms)
     noise = _apply_cognitive_hacks(
@@ -926,6 +1013,8 @@ def generate_subliminal_audio(
         override_intensity=override_intensity,
         duration_ms=duration_ms,
     )
+    if ambient_gain_db:
+        noise = noise.apply_gain(float(ambient_gain_db))
     if noise.channels != speech.channels:
         speech = speech.set_channels(noise.channels)
 
@@ -954,10 +1043,46 @@ def _render_manual_tab():
     st.subheader("Manual Generator (No AI Agent)")
 
     with st.form("manual-generator"):
-        noise_type = st.selectbox("Noise profile", AVAILABLE_NOISE_TYPES, index=0)
+        noise_type = st.selectbox("Primary noise profile", AVAILABLE_NOISE_TYPES, index=0)
+        default_extras = [choice for choice in DEFAULT_AMBIENT_SELECTION if choice != noise_type]
+        extra_profiles = st.multiselect(
+            "Additional ambience layers",
+            AVAILABLE_NOISE_TYPES,
+            default=default_extras,
+            help="Select multiple morphic fields, binaural beats, or liminal beds to stack at once.",
+        )
+        unique_profiles: list[str] = []
+        for name in [noise_type, *extra_profiles]:
+            if name not in unique_profiles:
+                unique_profiles.append(name)
+        profile_multipliers: Dict[str, int] = {}
+        with st.expander("Layer multipliers", expanded=False):
+            st.caption(
+                "Set how many recursive copies of each ambience profile should be blended. "
+                "Increase morphic or binaural counts for amplified potency."
+            )
+            for profile in unique_profiles:
+                key_suffix = profile.replace(" ", "-")
+                profile_multipliers[profile] = int(
+                    st.number_input(
+                        f"{profile} copies",
+                        min_value=1,
+                        value=2 if profile == "morphic-field" else 1,
+                        step=1,
+                        key=f"manual-multiplier-{key_suffix}",
+                    )
+                )
         playback_speed = st.slider("Playback speed", min_value=0.5, max_value=2.0, value=1.0, step=0.05)
         voice_rate = st.slider("Voice rate", min_value=120, max_value=220, value=160, step=5)
-        voice_volume = st.slider("Voice volume", min_value=0.3, max_value=1.0, value=0.9, step=0.05)
+        voice_volume = st.slider("Voice engine mix", min_value=0.3, max_value=1.0, value=0.9, step=0.05)
+        voice_gain_db = st.slider("Voice gain (dB)", min_value=-100, max_value=100, value=0, step=1)
+        ambient_gain_db = st.slider(
+            "Ambient bed gain (dB)",
+            min_value=-100,
+            max_value=100,
+            value=0,
+            step=1,
+        )
         filename = st.text_input("Base file name", "subliminal_mix")
         auto_layer = st.checkbox("Auto-layer ambient bed", value=True)
         if auto_layer:
@@ -1024,6 +1149,8 @@ def _render_manual_tab():
     tmp_dir = Path(tempfile.mkdtemp(prefix="subliminal_manual_"))
     audio_path = generate_subliminal_audio(
         noise_type=noise_type,
+        ambient_profiles=[profile for profile in unique_profiles[1:]],
+        profile_multipliers=profile_multipliers,
         affirmations=affirmations,
         playback_speed=playback_speed,
         output_dir=str(tmp_dir),
@@ -1039,11 +1166,17 @@ def _render_manual_tab():
         subconscious_intensity=subconscious_intensity,
         conscious_intensity=conscious_intensity,
         override_intensity=override_intensity,
+        voice_gain_db=voice_gain_db,
+        ambient_gain_db=ambient_gain_db,
     )
 
     st.success(f"Audio generated: {audio_path.name}")
     st.write(
         f"Layer engine: {layer_strategy_label} | Layers: {layer_count} | Variation: {layer_variation:.2f}"
+    )
+    palette_display = ", ".join(dict.fromkeys(unique_profiles))
+    st.write(
+        f"Sound palette: {palette_display} | Voice gain: {voice_gain_db} dB | Ambient gain: {ambient_gain_db} dB"
     )
     st.write(
         f"Center focus: {center_focus:.2f} | Subconscious hack: {subconscious_intensity:.2f} | "
@@ -1065,8 +1198,42 @@ def _render_ai_tab():
         api_key = st.text_input("OpenAI API key", type="password", value=os.environ.get("OPENAI_API_KEY", ""))
         theme = st.text_input("Affirmation theme", "Calm confidence")
         count = st.slider("Number of affirmations", min_value=3, max_value=20, value=8)
-        noise_type = st.selectbox("Noise profile", AVAILABLE_NOISE_TYPES[:-1], index=0)
+        noise_type = st.selectbox("Primary noise profile", AVAILABLE_NOISE_TYPES[:-1], index=0)
+        default_extras = [choice for choice in DEFAULT_AMBIENT_SELECTION if choice != noise_type]
+        extra_profiles = st.multiselect(
+            "Additional ambience layers",
+            AVAILABLE_NOISE_TYPES,
+            default=default_extras,
+            help="Blend multiple morphic, binaural, or liminal beds in a single AI-crafted render.",
+        )
+        unique_profiles: list[str] = []
+        for name in [noise_type, *extra_profiles]:
+            if name not in unique_profiles:
+                unique_profiles.append(name)
+        profile_multipliers: Dict[str, int] = {}
+        with st.expander("Layer multipliers", expanded=False):
+            st.caption("Adjust the copy count for each ambience profile the AI stack should include.")
+            for profile in unique_profiles:
+                key_suffix = profile.replace(" ", "-")
+                profile_multipliers[profile] = int(
+                    st.number_input(
+                        f"{profile} copies (AI)",
+                        min_value=1,
+                        value=2 if profile == "morphic-field" else 1,
+                        step=1,
+                        key=f"ai-multiplier-{key_suffix}",
+                    )
+                )
         playback_speed = st.slider("Playback speed", min_value=0.5, max_value=2.0, value=1.0, step=0.05)
+        voice_gain_db = st.slider("Voice gain (dB)", min_value=-100, max_value=100, value=0, step=1, key="ai-voice-gain")
+        ambient_gain_db = st.slider(
+            "Ambient bed gain (dB)",
+            min_value=-100,
+            max_value=100,
+            value=0,
+            step=1,
+            key="ai-ambient-gain",
+        )
         auto_layer = st.checkbox("Auto-layer ambient bed", value=True)
         if auto_layer:
             layer_count = int(
@@ -1130,12 +1297,14 @@ def _render_ai_tab():
 
         affirmations = helpers["generate_affirmations"](client, theme, count)
         title, description, thumbnail_prompt = helpers["generate_metadata"](
-            client, affirmations, noise_type, theme
+            client, affirmations, unique_profiles, theme
         )
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="subliminal_ai_"))
         audio_path = generate_subliminal_audio(
             noise_type=noise_type,
+            ambient_profiles=[profile for profile in unique_profiles[1:]],
+            profile_multipliers=profile_multipliers,
             affirmations=affirmations,
             playback_speed=playback_speed,
             output_dir=str(tmp_dir),
@@ -1149,6 +1318,8 @@ def _render_ai_tab():
             subconscious_intensity=subconscious_intensity,
             conscious_intensity=conscious_intensity,
             override_intensity=override_intensity,
+            voice_gain_db=voice_gain_db,
+            ambient_gain_db=ambient_gain_db,
         )
 
         thumbnail_path: Path | None = None
@@ -1164,6 +1335,11 @@ def _render_ai_tab():
     st.write(f"**Theme:** {theme}")
     st.write(
         f"Layer engine: {layer_strategy_label} | Layers: {layer_count} | Variation: {layer_variation:.2f}"
+    )
+    palette_display = ", ".join(dict.fromkeys(unique_profiles))
+    st.write(f"**Sound palette:** {palette_display}")
+    st.write(
+        f"**Gains:** Voice {voice_gain_db} dB | Ambient {ambient_gain_db} dB"
     )
     st.write(
         f"**Center focus:** {center_focus:.2f} | Subconscious hack: {subconscious_intensity:.2f} | "
