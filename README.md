@@ -25,7 +25,9 @@ pip install -r requirements.txt
 Launch the Streamlit interface to experiment with the generator in your
 browser. The app provides two tabs: a fully manual workflow and an AI-assisted
 experience that uses OpenAI to suggest affirmations and metadata. The manual
-tab does not require any API keys.
+tab does not require any API keys. Both modes now expose the recursive
+auto-layering controls so you can stack subtly different ambience beds without
+leaving the UI.
 
 ```bash
 streamlit run streamlit_app.py
@@ -74,6 +76,7 @@ such as `streamlit_app`, `app`, `main`, and `subliminal` for a
 
 - Text to speech conversion
 - Adjust playback speed
+- Recursive auto-layered ambience with per-layer variation controls
 - Combine multiple audio tracks
 - Export audio to a file
 

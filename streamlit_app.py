@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import importlib
 import os
+import random
 import tempfile
 from pathlib import Path
-from typing import Sequence
+from typing import Optional, Sequence
 
 import streamlit as st
 from pydub import AudioSegment, effects
@@ -89,6 +90,79 @@ def _ensure_duration(track: AudioSegment, target_ms: int) -> AudioSegment:
     return extended[:target_ms]
 
 
+def _apply_layer_variation(
+    segment: AudioSegment,
+    *,
+    variation_strength: float,
+    rng: random.Random,
+    layer_index: int,
+    target_duration: int,
+) -> AudioSegment:
+    """Apply subtle, layer-specific tweaks to the noise bed."""
+
+    if variation_strength <= 0:
+        return segment
+
+    base_offset = (layer_index % 3 - 1) * 1.2 * variation_strength
+    segment = segment.apply_gain(base_offset)
+
+    gain_shift = rng.uniform(-6.0, 2.5) * variation_strength
+    segment = segment.apply_gain(gain_shift)
+
+    if rng.random() < 0.5 * variation_strength:
+        cutoff = rng.randint(600, 1800)
+        segment = segment.low_pass_filter(cutoff)
+    else:
+        cutoff = rng.randint(1200, 4200)
+        segment = segment.high_pass_filter(cutoff)
+
+    if segment.channels == 1:
+        pan_amount = max(-1.0, min(1.0, rng.uniform(-0.7, 0.7) * variation_strength))
+        segment = segment.pan(pan_amount)
+
+    stretch = 1.0 + rng.uniform(-0.12, 0.12) * variation_strength
+    if stretch != 1.0:
+        segment = _change_speed(segment, stretch)
+
+    segment = _ensure_duration(segment, target_duration)
+
+    return segment
+
+
+def auto_layer_noise(
+    noise_type: str,
+    duration_ms: int,
+    *,
+    layer_count: int,
+    variation_strength: float,
+    seed: Optional[int] = None,
+) -> AudioSegment:
+    """Recursively build a layered ambient bed with subtle variation."""
+
+    layer_count = max(1, layer_count)
+    rng = random.Random(seed)
+
+    def _build_variant(index: int) -> AudioSegment:
+        layer = _ensure_duration(_build_noise(noise_type, duration_ms), duration_ms)
+        return _apply_layer_variation(
+            layer,
+            variation_strength=variation_strength,
+            rng=rng,
+            layer_index=index,
+            target_duration=duration_ms,
+        )
+
+    def _recursive_overlay(current_index: int, acc: AudioSegment) -> AudioSegment:
+        if current_index >= layer_count:
+            return acc
+        next_layer = _build_variant(current_index)
+        combined = acc.overlay(next_layer, gain_during_overlay=-1)
+        return _recursive_overlay(current_index + 1, combined)
+
+    base_layer = _build_variant(0)
+    return _recursive_overlay(1, base_layer)
+
+
 def generate_subliminal_audio(
     *,
     noise_type: str,
@@ -98,6 +172,10 @@ def generate_subliminal_audio(
     voice_rate: int = 160,
     voice_volume: float = 1.0,
     base_filename: str = "subliminal_mix",
+    auto_layer: bool = True,
+    layer_count: int = 3,
+    layer_variation: float = 0.4,
+    layer_seed: Optional[int] = None,
 ) -> Path:
     """Create an audio file containing the affirmations mixed with ambient noise."""
 
@@ -110,7 +188,16 @@ def generate_subliminal_audio(
     speech = _synthesize_affirmations(affirmations, rate=voice_rate, volume=voice_volume)
     speech = _change_speed(speech, playback_speed)
 
-    noise = _build_noise(noise_type, len(speech))
+    if auto_layer:
+        noise = auto_layer_noise(
+            noise_type,
+            len(speech),
+            layer_count=layer_count,
+            variation_strength=max(0.0, min(layer_variation, 1.0)),
+            seed=layer_seed,
+        )
+    else:
+        noise = _build_noise(noise_type, len(speech))
     if noise.channels != speech.channels:
         speech = speech.set_channels(noise.channels)
 
@@ -144,6 +231,10 @@ def _render_manual_tab():
         voice_rate = st.slider("Voice rate", min_value=120, max_value=220, value=160, step=5)
         voice_volume = st.slider("Voice volume", min_value=0.3, max_value=1.0, value=0.9, step=0.05)
         filename = st.text_input("Base file name", "subliminal_mix")
+        auto_layer = st.checkbox("Auto-layer ambient bed", value=True)
+        layer_count = st.slider("Layer count", min_value=1, max_value=8, value=3)
+        layer_variation = st.slider("Layer variation", min_value=0.0, max_value=1.0, value=0.4, step=0.05)
+        layer_seed_input = st.text_input("Layer seed (optional)", "")
         affirmations_text = st.text_area(
             "Affirmations",
             "I am calm and focused.\nI attract positive energy.\nMy mind and body are aligned.",
@@ -159,6 +250,16 @@ def _render_manual_tab():
         st.error("Please provide at least one affirmation.")
         return
 
+    layer_seed: Optional[int]
+    if layer_seed_input.strip():
+        try:
+            layer_seed = int(layer_seed_input.strip())
+        except ValueError:
+            st.error("Layer seed must be an integer if provided.")
+            return
+    else:
+        layer_seed = None
+
     tmp_dir = Path(tempfile.mkdtemp(prefix="subliminal_manual_"))
     audio_path = generate_subliminal_audio(
         noise_type=noise_type,
@@ -168,6 +269,10 @@ def _render_manual_tab():
         voice_rate=voice_rate,
         voice_volume=voice_volume,
         base_filename=filename,
+        auto_layer=auto_layer,
+        layer_count=layer_count,
+        layer_variation=layer_variation,
+        layer_seed=layer_seed,
     )
 
     st.success(f"Audio generated: {audio_path.name}")
@@ -189,6 +294,10 @@ def _render_ai_tab():
         count = st.slider("Number of affirmations", min_value=3, max_value=20, value=8)
         noise_type = st.selectbox("Noise profile", AVAILABLE_NOISE_TYPES[:-1], index=0)
         playback_speed = st.slider("Playback speed", min_value=0.5, max_value=2.0, value=1.0, step=0.05)
+        auto_layer = st.checkbox("Auto-layer ambient bed", value=True)
+        layer_count = st.slider("Layer count", min_value=1, max_value=8, value=4)
+        layer_variation = st.slider("Layer variation", min_value=0.0, max_value=1.0, value=0.45, step=0.05)
+        layer_seed_input = st.text_input("Layer seed (optional)", "")
         generate_thumbnail = st.checkbox("Generate thumbnail", value=True)
         submitted = st.form_submit_button("Run AI workflow")
 
@@ -198,6 +307,16 @@ def _render_ai_tab():
     if not api_key:
         st.error("An OpenAI API key is required for the AI workflow.")
         return
+
+    layer_seed: Optional[int]
+    if layer_seed_input.strip():
+        try:
+            layer_seed = int(layer_seed_input.strip())
+        except ValueError:
+            st.error("Layer seed must be an integer if provided.")
+            return
+    else:
+        layer_seed = None
 
     try:
         helpers = _load_openai_helpers()
@@ -214,6 +333,10 @@ def _render_ai_tab():
             playback_speed=playback_speed,
             output_dir=str(tmp_dir),
             base_filename="ai_subliminal_mix",
+            auto_layer=auto_layer,
+            layer_count=layer_count,
+            layer_variation=layer_variation,
+            layer_seed=layer_seed,
         )
 
         thumbnail_path: Path | None = None

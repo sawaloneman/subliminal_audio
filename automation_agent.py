@@ -185,6 +185,9 @@ AFFIRMATION_COUNT_OPTIONS: Sequence[int] = (5, 8, 10, 12, 15, 20)
 
 PLAYBACK_SPEED_OPTIONS: Sequence[float] = (0.75, 1.0, 1.15, 1.25, 1.5)
 
+LAYER_COUNT_OPTIONS: Sequence[int] = (1, 2, 3, 4, 5)
+LAYER_VARIATION_OPTIONS: Sequence[float] = (0.25, 0.35, 0.45, 0.55, 0.65)
+
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.force-ssl",
@@ -198,6 +201,10 @@ class GeneratorSettings:
     noise_type: str
     affirmation_count: int
     playback_speed: float
+    auto_layer: bool = True
+    layer_count: int = 3
+    layer_variation: float = 0.4
+    layer_seed: Optional[int] = None
 
 
 @dataclass
@@ -341,12 +348,19 @@ def render_audio(
     output_dir: Path,
 ) -> Path:
     ensure_directory(output_dir)
-    result = generator(
+    generator_kwargs = dict(
         noise_type=settings.noise_type,
         affirmations=list(affirmations),
         playback_speed=settings.playback_speed,
         output_dir=str(output_dir),
+        auto_layer=settings.auto_layer,
+        layer_count=settings.layer_count,
+        layer_variation=settings.layer_variation,
     )
+    if settings.layer_seed is not None:
+        generator_kwargs["layer_seed"] = settings.layer_seed
+
+    result = generator(**generator_kwargs)
     if isinstance(result, (list, tuple)):
         result = result[0]
     if isinstance(result, dict):
@@ -477,6 +491,10 @@ def choose_random_settings() -> GeneratorSettings:
         noise_type=random.choice(load_noise_options()),
         affirmation_count=random.choice(AFFIRMATION_COUNT_OPTIONS),
         playback_speed=random.choice(PLAYBACK_SPEED_OPTIONS),
+        auto_layer=True,
+        layer_count=random.choice(LAYER_COUNT_OPTIONS[1:]),
+        layer_variation=random.choice(LAYER_VARIATION_OPTIONS),
+        layer_seed=random.randint(0, 9999),
     )
 
 
@@ -514,10 +532,45 @@ def collect_manual_settings() -> Optional[GeneratorSettings]:
             pass
         print("Playback speed must be a positive number.")
 
+    auto_layer_choice = prompt_user("Enable auto-layered ambience? (Y/N): ", {"y", "n"}).lower()
+    auto_layer = auto_layer_choice == "y"
+    layer_count = 1
+    layer_variation = 0.0
+    layer_seed: Optional[int] = None
+
+    if auto_layer:
+        while True:
+            layer_input = prompt_user("Number of noise layers: ")
+            if layer_input.isdigit() and int(layer_input) > 0:
+                layer_count = int(layer_input)
+                break
+            print("Please enter a positive integer for the layer count.")
+
+        while True:
+            variation_input = prompt_user("Layer variation (0.0 - 1.0, e.g. 0.45): ")
+            try:
+                layer_variation = float(variation_input)
+                if 0.0 <= layer_variation <= 1.0:
+                    break
+            except ValueError:
+                pass
+            print("Layer variation must be a number between 0.0 and 1.0.")
+
+        seed_input = prompt_user("Layer random seed (optional, press enter to skip): ")
+        if seed_input:
+            try:
+                layer_seed = int(seed_input)
+            except ValueError:
+                print("Seed must be numeric. Leaving it unset.")
+
     settings = GeneratorSettings(
         noise_type=noise_type,
         affirmation_count=affirmation_count,
         playback_speed=playback_speed,
+        auto_layer=auto_layer,
+        layer_count=layer_count,
+        layer_variation=layer_variation,
+        layer_seed=layer_seed,
     )
 
     print("\nSelected configuration:")
