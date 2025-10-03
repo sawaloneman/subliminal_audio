@@ -42,6 +42,7 @@ import json
 import os
 import random
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -919,16 +920,52 @@ def run_diagnostics(include_benchmark: bool = True) -> List[DiagnosticResult]:
     def check_pyttsx3() -> Tuple[str, str]:
         if importlib.util.find_spec("pyttsx3") is None:
             return "warn", "pyttsx3 is not installed. Install it to enable speech synthesis."
+
         import pyttsx3
 
         engine = pyttsx3.init()
+        audio_size = 0
         try:
             voices = engine.getProperty("voices") or []
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+                temp_path = Path(tmp_file.name)
+            try:
+                engine.save_to_file("diagnostic speech synthesis check", str(temp_path))
+                engine.runAndWait()
+                if temp_path.exists():
+                    audio_size = temp_path.stat().st_size
+            finally:
+                temp_path.unlink(missing_ok=True)
         finally:
             engine.stop()
-        if voices:
-            return "pass", f"pyttsx3 initialised with {len(voices)} available voices."
-        return "warn", "pyttsx3 initialised but no voices were reported."
+
+        if audio_size <= 0:
+            return (
+                "warn",
+                "pyttsx3 initialised but produced no audio. Install espeak or system voices to enable narration.",
+            )
+
+        voice_msg = f"{len(voices)} voice(s) detected" if voices else "no voices reported"
+        return "pass", f"pyttsx3 synthesised audio successfully ({voice_msg})."
+
+    def check_espeak() -> Tuple[str, str]:
+        espeak_path = shutil.which("espeak")
+        if espeak_path is None:
+            return "warn", "espeak binary not found on PATH. Install espeak to enable the fallback synthesiser."
+
+        try:
+            completed = subprocess.run(
+                [espeak_path, "--version"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return "warn", f"Unable to execute espeak: {exc}"
+
+        version_line = completed.stdout.strip().splitlines()[0] if completed.stdout else "espeak"
+        return "pass", f"{version_line} located at {espeak_path}"
 
     def check_openai_package() -> Tuple[str, str]:
         if importlib.util.find_spec("openai") is None:
@@ -981,6 +1018,7 @@ def run_diagnostics(include_benchmark: bool = True) -> List[DiagnosticResult]:
     record("Python version", check_python_version)
     record("ffmpeg availability", check_ffmpeg)
     record("pyttsx3 speech engine", check_pyttsx3)
+    record("espeak CLI", check_espeak)
     record("openai package", check_openai_package)
     record("Google client libraries", check_google_clients)
     record("ChromeDriver", check_selenium)

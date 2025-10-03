@@ -109,6 +109,17 @@ Add `--no-benchmark` if you only need dependency checks without rendering audio.
 - Export audio to a file
 - Built-in diagnostics and benchmarking to verify dependencies and audio
   rendering end-to-end
+- Resilient speech synthesis pipeline that falls back to espeak when
+  pyttsx3/system voices are unavailable, with diagnostics that flag any
+  missing components
+
+### Speech synthesis reliability
+
+The generator first attempts to narrate affirmations with `pyttsx3`. When the
+engine cannot emit audio—typically because system voices are missing—it
+automatically falls back to the `espeak` CLI. Run the diagnostics tab (or
+`python3 automation_agent.py --diagnostics`) if narration fails; the report will
+identify whether `pyttsx3` or `espeak` require additional setup.
 
 ## Requirements
 

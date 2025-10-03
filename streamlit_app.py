@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib
 import os
 import random
+import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional, Sequence
@@ -328,13 +330,52 @@ def _synthesize_affirmations(
     rate: int = 160,
     volume: float = 1.0,
 ) -> AudioSegment:
+    """Generate narration for the provided affirmations.
+
+    The generator first attempts to use ``pyttsx3``. When the speech engine is
+    unavailable or fails to emit audio (for example, if system voices are
+    missing), it falls back to the ``espeak`` CLI when present. Clear error
+    messages summarise each failed attempt so diagnostics highlight missing
+    dependencies.
+    """
+
+    text = " \n".join(affirmations).strip()
+    if not text:
+        raise ValueError("At least one affirmation is required for synthesis.")
+
+    errors: list[str] = []
+
+    try:
+        return _synthesize_with_pyttsx3(text=text, rate=rate, volume=volume)
+    except ModuleNotFoundError as exc:
+        errors.append(f"pyttsx3 not installed: {exc}")
+    except RuntimeError as exc:
+        errors.append(f"pyttsx3 error: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"pyttsx3 unexpected error: {exc}")
+
+    try:
+        return _synthesize_with_espeak(text=text, rate=rate, volume=volume)
+    except FileNotFoundError as exc:
+        errors.append(str(exc))
+    except RuntimeError as exc:
+        errors.append(f"espeak error: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"espeak unexpected error: {exc}")
+
+    message = "Text-to-speech engine did not produce audio output."
+    if errors:
+        message = f"{message} Attempts: {'; '.join(errors)}"
+    raise RuntimeError(message)
+
+
+def _synthesize_with_pyttsx3(*, text: str, rate: int, volume: float) -> AudioSegment:
     import pyttsx3
 
     engine = pyttsx3.init()
     engine.setProperty("rate", rate)
     engine.setProperty("volume", max(0.0, min(volume, 1.0)))
 
-    text = " \n".join(affirmations)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
         temp_path = Path(tmp_file.name)
 
@@ -342,12 +383,48 @@ def _synthesize_affirmations(
         engine.save_to_file(text, str(temp_path))
         engine.runAndWait()
         if not temp_path.exists() or temp_path.stat().st_size == 0:
-            raise RuntimeError("Text-to-speech engine did not produce audio output.")
-        segment = AudioSegment.from_file(temp_path, format="wav")
+            raise RuntimeError("pyttsx3 completed but emitted an empty file. Ensure system voices are installed.")
+        return AudioSegment.from_file(temp_path, format="wav")
     finally:
         temp_path.unlink(missing_ok=True)
 
-    return segment
+
+def _synthesize_with_espeak(*, text: str, rate: int, volume: float) -> AudioSegment:
+    espeak_path = shutil.which("espeak")
+    if espeak_path is None:
+        raise FileNotFoundError("espeak binary not found on PATH. Install espeak to enable the fallback synthesiser.")
+
+    sanitized = text.replace("\r", " ").replace("\n", " ")
+    speech_rate = max(80, min(int(rate), 450))
+    amplitude = max(0, min(int(volume * 200), 200))
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+        temp_path = Path(tmp_file.name)
+
+    try:
+        completed = subprocess.run(
+            [
+                espeak_path,
+                "-w",
+                str(temp_path),
+                f"-s{speech_rate}",
+                f"-a{amplitude}",
+                sanitized,
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if not temp_path.exists() or temp_path.stat().st_size == 0:
+            stderr = completed.stderr.strip()
+            raise RuntimeError(
+                "espeak completed without producing audio. "
+                + (f"stderr: {stderr}" if stderr else "No additional diagnostics available.")
+            )
+        return AudioSegment.from_file(temp_path, format="wav")
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def _change_speed(segment: AudioSegment, speed: float) -> AudioSegment:
