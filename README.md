@@ -20,9 +20,20 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Streamlit generator
+### Streamlit application
 
-To use the classic standalone script, run:
+Launch the Streamlit interface to experiment with the generator in your
+browser. The app provides two tabs: a fully manual workflow and an AI-assisted
+experience that uses OpenAI to suggest affirmations and metadata. The manual
+tab does not require any API keys.
+
+```bash
+streamlit run streamlit_app.py
+```
+
+### Classic script
+
+If you prefer the original sample script, execute:
 
 ```bash
 python3 subliminal.py
@@ -31,17 +42,22 @@ python3 subliminal.py
 ### Automation agent
 
 The repository now includes `automation_agent.py`, an AI-assisted workflow for
-automating subliminal audio video creation and publishing. The agent expects an
-existing Streamlit app that exposes a `generate_subliminal_audio(...)`
-function. Configure the required API credentials (OpenAI, YouTube, Selenium)
-via environment variables, then launch the agent:
+automating subliminal audio video creation and publishing. Configure the
+required API credentials (OpenAI, YouTube, Selenium) via environment variables,
+then launch the agent:
 
 ```bash
 python3 automation_agent.py
 ```
 
-You can choose between manual mode (step-by-step configuration for each run)
-and auto mode (randomized settings every five minutes).
+On startup the script offers three options:
+
+1. **Manual generator (no AI agent)** – craft affirmations yourself, optionally
+   convert to video, and upload to YouTube with your own metadata.
+2. **AI agent – manual confirmation** – review each automated run before video
+   conversion and publishing.
+3. **AI agent – automated schedule** – run every five minutes with randomized
+   settings.
 
 If the `OPENAI_API_KEY` environment variable is not set, the agent will prompt
 you to securely enter the key at runtime. When a `GOOGLE_CLIENT_SECRETS` path

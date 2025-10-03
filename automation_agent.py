@@ -57,8 +57,15 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 
+_GOOGLE_CLIENT_CACHE: Optional[Tuple] = None
+
+
 def _load_google_client_dependencies():
     """Return Google client helpers, ensuring dependencies are installed."""
+
+    global _GOOGLE_CLIENT_CACHE
+    if _GOOGLE_CLIENT_CACHE is not None:
+        return _GOOGLE_CLIENT_CACHE
 
     required_packages = {
         "google.auth": "google-auth",
@@ -86,10 +93,14 @@ def _load_google_client_dependencies():
     from googleapiclient.http import MediaFileUpload as _MediaFileUpload
     from google_auth_oauthlib.flow import InstalledAppFlow as _InstalledAppFlow
 
-    return _Request, _Credentials, _build, _MediaFileUpload, _InstalledAppFlow
-
-
-Request, Credentials, build, MediaFileUpload, InstalledAppFlow = _load_google_client_dependencies()
+    _GOOGLE_CLIENT_CACHE = (
+        _Request,
+        _Credentials,
+        _build,
+        _MediaFileUpload,
+        _InstalledAppFlow,
+    )
+    return _GOOGLE_CLIENT_CACHE
 
 
 def _load_openai_client() -> "OpenAIClient":
@@ -408,6 +419,8 @@ def convert_audio_to_video(audio_path: Path, download_dir: Path) -> Path:
 
 
 def build_youtube_client(token_path: Path, client_secrets: Path):
+    Request, Credentials, build, _, InstalledAppFlow = _load_google_client_dependencies()
+
     creds: Optional[Credentials] = None
     if token_path.exists():
         creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
@@ -431,6 +444,8 @@ def upload_video_to_youtube(
     tags: Optional[Sequence[str]] = None,
     privacy_status: str = "public",
 ) -> str:
+    _, _, _, MediaFileUpload, _ = _load_google_client_dependencies()
+
     body = {
         "snippet": {
             "title": title,
@@ -513,9 +528,122 @@ def collect_manual_settings() -> Optional[GeneratorSettings]:
     return settings
 
 
+def collect_affirmations_interactively(expected_count: int) -> List[str]:
+    print(
+        "Enter your affirmations one per line. Submit an empty line to finish. "
+        f"You indicated a target of {expected_count} affirmations, but you can "
+        "provide more or fewer if desired."
+    )
+    affirmations: List[str] = []
+    while True:
+        entry = input(f"Affirmation {len(affirmations) + 1}: ").strip()
+        if not entry:
+            if affirmations:
+                break
+            print("At least one affirmation is required.")
+            continue
+        affirmations.append(entry)
+        if len(affirmations) >= expected_count:
+            more = prompt_user("Add another affirmation? (Y/N): ", {"y", "n"}).lower()
+            if more != "y":
+                break
+    return affirmations
+
+
+def prompt_multiline(prompt: str) -> str:
+    print(prompt)
+    print("Enter a blank line to finish.")
+    lines: List[str] = []
+    while True:
+        line = input().rstrip()
+        if not line:
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def build_output_stem(settings: GeneratorSettings) -> str:
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     return sanitize_filename(f"{settings.noise_type}_{timestamp}")
+
+
+def run_basic_generator(
+    generator: Callable[..., Path] = generate_subliminal_audio,
+    client_secrets_path: Optional[Path] = None,
+    token_path: Optional[Path] = None,
+) -> None:
+    """Interactive workflow that skips the AI assistant."""
+
+    youtube_client = None
+    while True:
+        settings = collect_manual_settings()
+        if settings is None:
+            print("Exiting manual generator.")
+            return
+
+        stem = build_output_stem(settings)
+        session_dir = ensure_directory(Path("manual_artifacts") / stem)
+
+        affirmations = collect_affirmations_interactively(settings.affirmation_count)
+        text_path = save_affirmations(affirmations, session_dir, stem)
+        print(f"Saved affirmations to {text_path}")
+
+        audio_path = render_audio(generator, settings, affirmations, session_dir)
+        print(f"Generated audio: {audio_path}")
+
+        video_path: Optional[Path] = None
+        convert_choice = prompt_user("Convert audio to video now? (Y/N): ", {"y", "n"}).lower()
+        if convert_choice == "y":
+            video_path = convert_audio_to_video(audio_path, session_dir)
+            print(f"Video downloaded to {video_path}")
+
+        if not video_path:
+            continue
+
+        if not client_secrets_path:
+            print(
+                "GOOGLE_CLIENT_SECRETS is not set. Skipping YouTube upload."
+            )
+            continue
+
+        upload_choice = prompt_user("Upload the video to YouTube? (Y/N): ", {"y", "n"}).lower()
+        if upload_choice != "y":
+            continue
+
+        if youtube_client is None:
+            youtube_client = build_youtube_client(
+                token_path or Path("token.json"), client_secrets_path
+            )
+
+        title = input("Video title: ").strip()
+        if not title:
+            title = stem.replace("_", " ").title()
+
+        description = prompt_multiline("Enter the video description")
+        if not description:
+            description = "Generated with the manual subliminal audio workflow."
+
+        thumbnail_path: Optional[Path] = None
+        if prompt_user("Provide a thumbnail image path? (Y/N): ", {"y", "n"}).lower() == "y":
+            candidate = Path(input("Thumbnail image path: ").strip()).expanduser()
+            if candidate.exists():
+                thumbnail_path = candidate
+            else:
+                print(f"Thumbnail not found at {candidate}. Skipping upload.")
+
+        if not thumbnail_path:
+            print("A thumbnail is required for upload. Skipping YouTube publishing.")
+            continue
+
+        video_id = upload_video_to_youtube(
+            youtube_client,
+            video_path=video_path,
+            title=title,
+            description=description,
+            thumbnail_path=thumbnail_path,
+            tags=[settings.noise_type, "subliminal", "affirmations"],
+        )
+        print(f"Video uploaded successfully: https://youtube.com/watch?v={video_id}")
 
 
 def run_single_workflow(
@@ -592,18 +720,32 @@ def run_auto_mode(openai_client: "OpenAIClient", youtube_client, interval_minute
 
 
 def main() -> None:
+    client_secrets_env = os.environ.get("GOOGLE_CLIENT_SECRETS")
+    client_secrets_path = Path(client_secrets_env).expanduser() if client_secrets_env else None
+    token_path = Path(os.environ.get("YOUTUBE_TOKEN", "token.json")).expanduser()
+
+    print("Select workflow mode:")
+    print("  [1] Manual generator (no AI agent)")
+    print("  [2] AI agent – manual confirmation")
+    print("  [3] AI agent – automated schedule")
+    selection = prompt_user("Choose an option (1/2/3): ", {"1", "2", "3"})
+
+    if selection == "1":
+        run_basic_generator(
+            client_secrets_path=client_secrets_path,
+            token_path=token_path,
+        )
+        return
+
     openai_client = build_openai_client()
 
-    client_secrets_path = os.environ.get("GOOGLE_CLIENT_SECRETS")
     youtube_client = None
     if client_secrets_path:
-        token_path = Path(os.environ.get("YOUTUBE_TOKEN", "token.json"))
-        youtube_client = build_youtube_client(token_path, Path(client_secrets_path))
+        youtube_client = build_youtube_client(token_path, client_secrets_path)
     else:
         print("GOOGLE_CLIENT_SECRETS not set. YouTube upload will be skipped.")
 
-    mode = prompt_user("Select mode: [1] Manual  [2] Auto : ", {"1", "2"})
-    if mode == "1":
+    if selection == "2":
         run_manual_mode(openai_client, youtube_client)
     else:
         run_auto_mode(openai_client, youtube_client)

@@ -1,0 +1,266 @@
+"""Streamlit front-end for the subliminal audio generator and AI agent."""
+
+from __future__ import annotations
+
+import importlib
+import os
+import tempfile
+from pathlib import Path
+from typing import Sequence
+
+import streamlit as st
+from pydub import AudioSegment, effects
+from pydub.generators import Sine, WhiteNoise
+
+AVAILABLE_NOISE_TYPES: Sequence[str] = (
+    "purple",
+    "brown",
+    "pink",
+    "center",
+    "binaural",
+    "white",
+    "none",
+)
+
+
+def _sanitize_filename(name: str) -> str:
+    return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in name)
+
+
+def _synthesize_affirmations(
+    affirmations: Sequence[str],
+    rate: int = 160,
+    volume: float = 1.0,
+) -> AudioSegment:
+    import pyttsx3
+
+    engine = pyttsx3.init()
+    engine.setProperty("rate", rate)
+    engine.setProperty("volume", max(0.0, min(volume, 1.0)))
+
+    text = " \n".join(affirmations)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_file:
+        temp_path = Path(tmp_file.name)
+
+    try:
+        engine.save_to_file(text, str(temp_path))
+        engine.runAndWait()
+        segment = AudioSegment.from_file(temp_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    return segment
+
+
+def _change_speed(segment: AudioSegment, speed: float) -> AudioSegment:
+    if speed == 1.0:
+        return segment
+    return segment._spawn(segment.raw_data, overrides={"frame_rate": int(segment.frame_rate * speed)}).set_frame_rate(
+        segment.frame_rate
+    )
+
+
+def _build_noise(noise_type: str, duration_ms: int) -> AudioSegment:
+    base = WhiteNoise().to_audio_segment(duration=duration_ms)
+
+    if noise_type == "pink":
+        return base.low_pass_filter(1200).apply_gain(-8)
+    if noise_type == "brown":
+        return base.low_pass_filter(800).apply_gain(-10)
+    if noise_type == "purple":
+        return base.high_pass_filter(1800).apply_gain(-10)
+    if noise_type == "center":
+        tone = Sine(432).to_audio_segment(duration=duration_ms).apply_gain(-9)
+        return base.overlay(tone)
+    if noise_type == "binaural":
+        left = Sine(210).to_audio_segment(duration=duration_ms).apply_gain(-12)
+        right = Sine(214).to_audio_segment(duration=duration_ms).apply_gain(-12)
+        return AudioSegment.from_mono_audiosegments(left, right)
+    if noise_type == "none":
+        return AudioSegment.silent(duration=duration_ms)
+    return base.apply_gain(-8)
+
+
+def _ensure_duration(track: AudioSegment, target_ms: int) -> AudioSegment:
+    if len(track) >= target_ms:
+        return track[:target_ms]
+    loops = (target_ms // len(track)) + 1
+    extended = track * loops
+    return extended[:target_ms]
+
+
+def generate_subliminal_audio(
+    *,
+    noise_type: str,
+    affirmations: Sequence[str],
+    playback_speed: float,
+    output_dir: str,
+    voice_rate: int = 160,
+    voice_volume: float = 1.0,
+    base_filename: str = "subliminal_mix",
+) -> Path:
+    """Create an audio file containing the affirmations mixed with ambient noise."""
+
+    if not affirmations:
+        raise ValueError("At least one affirmation is required.")
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    speech = _synthesize_affirmations(affirmations, rate=voice_rate, volume=voice_volume)
+    speech = _change_speed(speech, playback_speed)
+
+    noise = _build_noise(noise_type, len(speech))
+    if noise.channels != speech.channels:
+        speech = speech.set_channels(noise.channels)
+
+    balanced_noise = _ensure_duration(noise, len(speech))
+    mixed = balanced_noise.overlay(speech + 6)
+    final_track = effects.normalize(mixed)
+
+    filename = f"{_sanitize_filename(base_filename)}.mp3"
+    final_path = output_path / filename
+    final_track.export(final_path, format="mp3")
+    return final_path
+
+
+def _load_openai_helpers():
+    automation_agent = importlib.import_module("automation_agent")
+    OpenAI = automation_agent._load_openai_client()  # type: ignore[attr-defined]
+    return {
+        "OpenAI": OpenAI,
+        "generate_affirmations": automation_agent.generate_affirmations,
+        "generate_metadata": automation_agent.generate_metadata,
+        "generate_thumbnail": automation_agent.generate_thumbnail,
+    }
+
+
+def _render_manual_tab():
+    st.subheader("Manual Generator (No AI Agent)")
+
+    with st.form("manual-generator"):
+        noise_type = st.selectbox("Noise profile", AVAILABLE_NOISE_TYPES, index=0)
+        playback_speed = st.slider("Playback speed", min_value=0.5, max_value=2.0, value=1.0, step=0.05)
+        voice_rate = st.slider("Voice rate", min_value=120, max_value=220, value=160, step=5)
+        voice_volume = st.slider("Voice volume", min_value=0.3, max_value=1.0, value=0.9, step=0.05)
+        filename = st.text_input("Base file name", "subliminal_mix")
+        affirmations_text = st.text_area(
+            "Affirmations",
+            "I am calm and focused.\nI attract positive energy.\nMy mind and body are aligned.",
+            height=160,
+        )
+        submitted = st.form_submit_button("Generate audio")
+
+    if not submitted:
+        return
+
+    affirmations = [line.strip() for line in affirmations_text.splitlines() if line.strip()]
+    if not affirmations:
+        st.error("Please provide at least one affirmation.")
+        return
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="subliminal_manual_"))
+    audio_path = generate_subliminal_audio(
+        noise_type=noise_type,
+        affirmations=affirmations,
+        playback_speed=playback_speed,
+        output_dir=str(tmp_dir),
+        voice_rate=voice_rate,
+        voice_volume=voice_volume,
+        base_filename=filename,
+    )
+
+    st.success(f"Audio generated: {audio_path.name}")
+    st.audio(str(audio_path))
+    with audio_path.open("rb") as audio_file:
+        st.download_button("Download MP3", data=audio_file, file_name=audio_path.name, mime="audio/mpeg")
+
+
+def _render_ai_tab():
+    st.subheader("AI Agent Assistance")
+    st.write(
+        "Use OpenAI to generate affirmations, metadata, and an optional thumbnail. "
+        "Your API key is used only for the current session."
+    )
+
+    with st.form("ai-agent"):
+        api_key = st.text_input("OpenAI API key", type="password", value=os.environ.get("OPENAI_API_KEY", ""))
+        theme = st.text_input("Affirmation theme", "Calm confidence")
+        count = st.slider("Number of affirmations", min_value=3, max_value=20, value=8)
+        noise_type = st.selectbox("Noise profile", AVAILABLE_NOISE_TYPES[:-1], index=0)
+        playback_speed = st.slider("Playback speed", min_value=0.5, max_value=2.0, value=1.0, step=0.05)
+        generate_thumbnail = st.checkbox("Generate thumbnail", value=True)
+        submitted = st.form_submit_button("Run AI workflow")
+
+    if not submitted:
+        return
+
+    if not api_key:
+        st.error("An OpenAI API key is required for the AI workflow.")
+        return
+
+    try:
+        helpers = _load_openai_helpers()
+        OpenAI = helpers["OpenAI"]
+        client = OpenAI(api_key=api_key)
+
+        affirmations = helpers["generate_affirmations"](client, theme, count)
+        title, description, thumbnail_prompt = helpers["generate_metadata"](client, affirmations, noise_type)
+
+        tmp_dir = Path(tempfile.mkdtemp(prefix="subliminal_ai_"))
+        audio_path = generate_subliminal_audio(
+            noise_type=noise_type,
+            affirmations=affirmations,
+            playback_speed=playback_speed,
+            output_dir=str(tmp_dir),
+            base_filename="ai_subliminal_mix",
+        )
+
+        thumbnail_path: Path | None = None
+        if generate_thumbnail:
+            thumbnail_path = tmp_dir / "thumbnail.png"
+            helpers["generate_thumbnail"](client, thumbnail_prompt, thumbnail_path)
+
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"AI workflow failed: {exc}")
+        return
+
+    st.success("AI workflow completed.")
+    st.write(f"**Title:** {title}")
+    st.write("**Description:**")
+    st.write(description)
+    st.write("**Affirmations:**")
+    for affirmation in affirmations:
+        st.write(f"- {affirmation}")
+
+    st.audio(str(audio_path))
+    with audio_path.open("rb") as audio_file:
+        st.download_button("Download MP3", data=audio_file, file_name=audio_path.name, mime="audio/mpeg")
+
+    if thumbnail_path and thumbnail_path.exists():
+        st.image(str(thumbnail_path), caption="AI-generated thumbnail")
+
+    st.info(
+        "For full automation (video conversion and YouTube upload), run `python automation_agent.py` "
+        "and choose one of the AI agent options."
+    )
+
+
+def run() -> None:
+    st.set_page_config(page_title="Subliminal Audio Studio", page_icon="🎧")
+    st.title("Subliminal Audio Studio")
+    st.write(
+        "Create custom subliminal audio manually or let the AI agent suggest "
+        "affirmations and metadata."
+    )
+
+    tabs = st.tabs(["Manual", "AI Agent"])
+    with tabs[0]:
+        _render_manual_tab()
+    with tabs[1]:
+        _render_ai_tab()
+
+
+if __name__ == "__main__":
+    run()
+
