@@ -38,6 +38,7 @@ import argparse
 import base64
 import importlib
 import importlib.util
+import io
 import json
 import os
 import random
@@ -74,6 +75,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 
 _GOOGLE_CLIENT_CACHE: Optional[Tuple] = None
+_FFMPEG_BACKEND_NOTE: str = ""
 
 
 @dataclass
@@ -84,6 +86,47 @@ class DiagnosticResult:
     status: Literal["pass", "fail", "warn"]
     details: str = ""
     duration: Optional[float] = None
+
+
+def _configure_pydub_backend() -> None:
+    """Ensure pydub can locate an ffmpeg binary for hosted deployments."""
+
+    global _FFMPEG_BACKEND_NOTE
+
+    try:
+        from pydub import AudioSegment
+    except Exception as exc:  # noqa: BLE001
+        _FFMPEG_BACKEND_NOTE = f"pydub unavailable: {exc}"
+        return
+
+    converter = AudioSegment.converter
+    if converter:
+        converter_path = Path(converter)
+        if converter_path.exists():
+            _FFMPEG_BACKEND_NOTE = f"Using existing ffmpeg at {converter_path}"
+            return
+
+    try:
+        import imageio_ffmpeg
+    except Exception as exc:  # noqa: BLE001
+        _FFMPEG_BACKEND_NOTE = f"imageio-ffmpeg unavailable: {exc}"
+        return
+
+    try:
+        ffmpeg_path = Path(imageio_ffmpeg.get_ffmpeg_exe())
+    except Exception as exc:  # noqa: BLE001
+        _FFMPEG_BACKEND_NOTE = f"Could not locate bundled ffmpeg: {exc}"
+        return
+
+    AudioSegment.converter = str(ffmpeg_path)
+    AudioSegment.ffmpeg = str(ffmpeg_path)
+    if hasattr(AudioSegment, "ffprobe"):
+        AudioSegment.ffprobe = str(ffmpeg_path)
+    os.environ.setdefault("FFMPEG_BINARY", str(ffmpeg_path))
+    _FFMPEG_BACKEND_NOTE = f"Configured bundled ffmpeg at {ffmpeg_path}"
+
+
+_configure_pydub_backend()
 
 
 def _load_google_client_dependencies():
@@ -1039,7 +1082,35 @@ def run_diagnostics(include_benchmark: bool = True) -> List[DiagnosticResult]:
         converter_path = Path(converter)
         if not converter_path.exists():
             return "warn", f"Expected ffmpeg at {converter_path}, but it was not found."
-        return "pass", f"ffmpeg located at {converter_path}"
+
+        note = _FFMPEG_BACKEND_NOTE
+        try:
+            generator_module = importlib.import_module(generate_subliminal_audio.__module__)
+            note = getattr(generator_module, "_FFMPEG_BACKEND_NOTE", note)
+        except Exception:  # noqa: BLE001
+            pass
+
+        details = f"ffmpeg located at {converter_path}"
+        if note:
+            details = f"{details}. {note}"
+        return "pass", details
+
+    def check_gtts() -> Tuple[str, str]:
+        if importlib.util.find_spec("gtts") is None:
+            return "warn", "gTTS package not installed. Install it for hosted narration support."
+
+        from gtts import gTTS
+
+        buffer = io.BytesIO()
+        try:
+            gTTS(text="diagnostic speech synthesis", lang="en").write_to_fp(buffer)
+        except Exception as exc:  # noqa: BLE001
+            return "warn", f"gTTS synthesis failed (check network/API access): {exc}"
+
+        if buffer.tell() <= 0:
+            return "warn", "gTTS returned no audio."
+
+        return "pass", "gTTS synthesised audio successfully."
 
     def check_pyttsx3() -> Tuple[str, str]:
         if importlib.util.find_spec("pyttsx3") is None:
@@ -1145,6 +1216,7 @@ def run_diagnostics(include_benchmark: bool = True) -> List[DiagnosticResult]:
 
     record("Python version", check_python_version)
     record("ffmpeg availability", check_ffmpeg)
+    record("gTTS speech engine", check_gtts)
     record("pyttsx3 speech engine", check_pyttsx3)
     record("espeak CLI", check_espeak)
     record("openai package", check_openai_package)

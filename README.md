@@ -6,7 +6,9 @@ This repository contains a Python script for creating subliminal audio tracks wi
 ## Installation
 
 Run the following script to install all necessary system and Python dependencies. This script installs Python 3, pip, ffmpeg,
-espeak, Chromium (for Selenium automation), and every required Python library.
+espeak, Chromium (for Selenium automation), and every required Python library. Hosted environments such as Streamlit Cloud can
+skip the system packages—the app now bundles an ffmpeg binary via `imageio-ffmpeg` and uses the network-based `gTTS` engine by
+default—yet the installer remains available for local development.
 
 ```bash
 ./install_dependencies.sh
@@ -97,7 +99,8 @@ Add `--no-benchmark` if you only need dependency checks without rendering audio.
 
 ## Features
 
-- Text to speech conversion
+- Text to speech conversion with a cloud-friendly `gTTS` default and offline
+  fallbacks
 - Adjust playback speed
 - Recursive auto-layered ambience with per-layer variation controls,
   unlimited layer counts, and adaptive/recursive/iterative engines
@@ -115,17 +118,17 @@ Add `--no-benchmark` if you only need dependency checks without rendering audio.
 - Export audio to a file
 - Built-in diagnostics and benchmarking to verify dependencies and audio
   rendering end-to-end
-- Resilient speech synthesis pipeline that falls back to espeak when
-  pyttsx3/system voices are unavailable, with diagnostics that flag any
+- Resilient speech synthesis pipeline that prefers `gTTS`, falls back to
+  `pyttsx3`, and ultimately the `espeak` CLI, with diagnostics that flag any
   missing components
 
 ### Speech synthesis reliability
 
-The generator first attempts to narrate affirmations with `pyttsx3`. When the
-engine cannot emit audio—typically because system voices are missing—it
-automatically falls back to the `espeak` CLI. Run the diagnostics tab (or
-`python3 automation_agent.py --diagnostics`) if narration fails; the report will
-identify whether `pyttsx3` or `espeak` require additional setup.
+The generator now tries `gTTS` first so deployments without system-level voices
+can still narrate affirmations. When network access or the package is
+unavailable, it falls back to `pyttsx3` and finally the `espeak` CLI. Run the
+diagnostics tab (or `python3 automation_agent.py --diagnostics`) if narration
+fails; the report will identify which engine requires attention.
 
 ## Requirements
 
@@ -142,3 +145,5 @@ identify whether `pyttsx3` or `espeak` require additional setup.
 - google-auth
 - google-auth-oauthlib
 - google-api-python-client
+- gTTS
+- imageio-ffmpeg

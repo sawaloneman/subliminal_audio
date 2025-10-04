@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import importlib.util
+import io
+import math
 import os
 import random
 import shutil
@@ -24,6 +27,46 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 _PYTTSX3_ENGINE: Optional["PyTTSX3Engine"] = None
 _PYTTSX3_LOCK = threading.RLock()
+_FFMPEG_BACKEND_NOTE: str = ""
+
+
+def _configure_audio_backend() -> None:
+    """Ensure pydub has access to an ffmpeg binary without system packages."""
+
+    global _FFMPEG_BACKEND_NOTE
+    try:
+        converter = AudioSegment.converter
+    except Exception as exc:  # noqa: BLE001
+        _FFMPEG_BACKEND_NOTE = f"Unable to inspect pydub converter: {exc}"
+        return
+
+    if converter:
+        converter_path = Path(converter)
+        if converter_path.exists():
+            _FFMPEG_BACKEND_NOTE = f"Using existing ffmpeg at {converter_path}"
+            return
+
+    try:
+        import imageio_ffmpeg
+    except Exception as exc:  # noqa: BLE001
+        _FFMPEG_BACKEND_NOTE = f"imageio-ffmpeg unavailable: {exc}"
+        return
+
+    try:
+        ffmpeg_path = Path(imageio_ffmpeg.get_ffmpeg_exe())
+    except Exception as exc:  # noqa: BLE001
+        _FFMPEG_BACKEND_NOTE = f"Could not locate bundled ffmpeg: {exc}"
+        return
+
+    AudioSegment.converter = str(ffmpeg_path)
+    AudioSegment.ffmpeg = str(ffmpeg_path)
+    if hasattr(AudioSegment, "ffprobe"):
+        AudioSegment.ffprobe = str(ffmpeg_path)
+    os.environ.setdefault("FFMPEG_BINARY", str(ffmpeg_path))
+    _FFMPEG_BACKEND_NOTE = f"Configured bundled ffmpeg at {ffmpeg_path}"
+
+
+_configure_audio_backend()
 
 
 def _inject_app_styles() -> None:
@@ -358,11 +401,11 @@ def _synthesize_affirmations(
 ) -> AudioSegment:
     """Generate narration for the provided affirmations.
 
-    The generator first attempts to use ``pyttsx3``. When the speech engine is
-    unavailable or fails to emit audio (for example, if system voices are
-    missing), it falls back to the ``espeak`` CLI when present. Clear error
-    messages summarise each failed attempt so diagnostics highlight missing
-    dependencies.
+    The generator first attempts a cloud-friendly ``gTTS`` pipeline so hosted
+    deployments do not require system packages. When that is unavailable it
+    falls back to ``pyttsx3`` and, as a last resort, the ``espeak`` CLI. Clear
+    error messages summarise each failed attempt so diagnostics highlight
+    missing dependencies.
     """
 
     text = " \n".join(affirmations).strip()
@@ -370,6 +413,15 @@ def _synthesize_affirmations(
         raise ValueError("At least one affirmation is required for synthesis.")
 
     errors: list[str] = []
+
+    try:
+        return _synthesize_with_gtts(text=text, rate=rate, volume=volume)
+    except ModuleNotFoundError as exc:
+        errors.append(f"gTTS not installed: {exc}")
+    except RuntimeError as exc:
+        errors.append(f"gTTS error: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"gTTS unexpected error: {exc}")
 
     try:
         return _synthesize_with_pyttsx3(text=text, rate=rate, volume=volume)
@@ -413,6 +465,35 @@ def _reset_pyttsx3_engine() -> None:
             with contextlib.suppress(Exception):
                 _PYTTSX3_ENGINE.stop()
         _PYTTSX3_ENGINE = None
+
+
+def _synthesize_with_gtts(*, text: str, rate: int, volume: float) -> AudioSegment:
+    if importlib.util.find_spec("gtts") is None:
+        raise ModuleNotFoundError("gTTS is not installed.")
+
+    from gtts import gTTS
+
+    buffer = io.BytesIO()
+    tts = gTTS(text=text, lang="en")
+    tts.write_to_fp(buffer)
+    if buffer.tell() <= 0:
+        raise RuntimeError("gTTS did not emit any audio data.")
+    buffer.seek(0)
+    segment = AudioSegment.from_file(buffer, format="mp3")
+
+    # Approximate rate control by time-stretching relative to a reference rate.
+    reference_rate = 160
+    if rate > 0 and rate != reference_rate:
+        speed = max(rate / float(reference_rate), 0.25)
+        segment = _change_speed(segment, speed)
+
+    if volume <= 0:
+        segment = segment - 120
+    elif volume != 1.0:
+        gain_db = 20 * math.log10(volume)
+        segment = segment.apply_gain(gain_db)
+
+    return segment
 
 
 def _synthesize_with_pyttsx3(*, text: str, rate: int, volume: float) -> AudioSegment:
